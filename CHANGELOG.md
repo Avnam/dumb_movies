@@ -3,6 +3,15 @@
 Versions v1-v5 were written before version control started, so only their
 descriptions are kept here; v5 is the first version stored in git.
 
+## grow_movie.py - 2026-11-20 - work in progress, NOT TESTED YET
+- New separate script: one person's face fixed in the middle while photos change, in
+  date order ("watch them grow"). Finds faces + landmarks (OpenCV YuNet), follows the
+  person by face fingerprint learned from nearby-date single-face photos (SFace), picks
+  big/sharp/frontal photos spread over time, aligns the eyes, renders flip-book or crossfade.
+  Configurable: --style, --pps, --duration/--count, --size, --label age|date.
+- Setup: opencv-python 5.1.0.95 in requirements.txt; setup.ps1 downloads the two face
+  models from the OpenCV model zoo and checks their SHA-256.
+
 ## v8 - 2026-11-20 - exact timing, hard zoom jumps, zoom on the subject
 - Timing: each hit is moved to the exact start of its sound (`refine_attacks`, 1 ms steps).
   Before: hits were up to +-40 ms off (10-90%), enough to feel off-rhythm at 11 clacks/s;

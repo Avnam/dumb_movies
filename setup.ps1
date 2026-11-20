@@ -44,6 +44,23 @@ if (-not $CheckOnly) {
     & $py -m pip install --quiet -r (Join-Path $PSScriptRoot 'requirements.txt')
 }
 
+# ---- face models for grow_movie.py (OpenCV model zoo), verified by SHA-256
+$models = @(
+    @{ File = 'face_detection_yunet_2023mar.onnx'; Sha = '8F2383E4DD3CFBB4553EA8718107FC0423210DC964F9F4280604804ED2552FA4'
+       Url  = 'https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx' },
+    @{ File = 'face_recognition_sface_2021dec.onnx'; Sha = '0BA9FBFA01B5270C96627C4EF784DA859931E02F04419C829E83484087C34E79'
+       Url  = 'https://github.com/opencv/opencv_zoo/raw/main/models/face_recognition_sface/face_recognition_sface_2021dec.onnx' }
+)
+$mdir = Join-Path $PSScriptRoot 'models'
+foreach ($m in $models) {
+    $f = Join-Path $mdir $m.File
+    if (-not $CheckOnly -and -not (Test-Path $f)) {
+        New-Item -ItemType Directory -Force $mdir | Out-Null
+        Write-Host "Downloading $($m.File)..."
+        curl.exe -sL -o $f $m.Url
+    }
+}
+
 # ---- check
 Refresh-Path
 $ok = $true
@@ -61,5 +78,11 @@ if ($py) {
         $v = "$out".Split(' ')
         Write-Host "Packages: numpy $($v[0]) | pillow $($v[1])"
     } else { Write-Host 'Packages: MISSING (run .\setup.ps1)'; $ok = $false }
+}
+foreach ($m in $models) {
+    $f = Join-Path $mdir $m.File
+    if (-not (Test-Path $f)) { Write-Host "Model  : $($m.File) MISSING"; $ok = $false }
+    elseif ((Get-FileHash $f -Algorithm SHA256).Hash -ne $m.Sha) { Write-Host "Model  : $($m.File) WRONG CHECKSUM - delete it and run setup again"; $ok = $false }
+    else { Write-Host "Model  : $($m.File) ok" }
 }
 if ($ok) { Write-Host 'All set.' } else { Write-Host 'Something is missing - see above.'; exit 1 }

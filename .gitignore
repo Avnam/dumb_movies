@@ -12,3 +12,5 @@ work/
 *.heic
 *.zip
 __pycache__/
+# face models are downloaded by setup.ps1 (checked by SHA-256)
+models/

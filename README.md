@@ -54,6 +54,7 @@ python beat_movie.py work\sorted song.mp3 work\render --section big --gap 0.8
 | File | What it does |
 |---|---|
 | `beat_movie.py` | The main script (above). |
+| `grow_movie.py` | "Watch them grow": one face fixed in the middle while photos change. Work in progress - see its `--help`. |
 | `tools/inspect_zip.py` | File-name patterns inside a zip; `--pattern` counts matches. |
 | `tools/contact_sheet.py` | One image with numbered thumbnails of a sorted folder. |
 | `tools/analyze_song.py` | Hits per 5 seconds; `--slots N` shows how long N hits last. |
