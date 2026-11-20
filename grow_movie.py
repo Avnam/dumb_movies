@@ -60,10 +60,25 @@ def load_bgr(path: Path, max_side=None):
         return np.ascontiguousarray(np.asarray(im)[:, :, ::-1])
 
 
+def upright_size(path: Path):
+    """Full width/height of a photo as displayed (EXIF rotation applied), without decoding it."""
+    from PIL import Image
+    try:
+        import pillow_heif
+        pillow_heif.register_heif_opener()
+    except ImportError:
+        pass
+    with Image.open(path) as im:
+        w, h = im.size
+        orient = im.getexif().get(274, 1)
+    return [h, w] if orient in (5, 6, 7, 8) else [w, h]
+
+
 # ---------------------------------------------------------------- faces
 def detect_faces(items, cache_file: Path, work_side=1600):
-    """Faces in every photo: box, 5 landmarks, score, fingerprint, sharpness.
-    Cached in cache_file (by file name + size), so re-runs are fast."""
+    """Faces in every photo: box, 5 landmarks, score, fingerprint, sharpness, and the
+    photo's full size (orig_wh). Landmarks are in the coordinates of a copy at most
+    work_side pixels wide (img_wh). Cached in cache_file (by file name + size)."""
     import cv2
     cache = json.loads(cache_file.read_text()) if cache_file.exists() else {}
     det = cv2.FaceDetectorYN.create(str(YUNET), "", (320, 320), 0.7, 0.3, 5000)
@@ -74,7 +89,11 @@ def detect_faces(items, cache_file: Path, work_side=1600):
         p = it["sorted"]
         key = f"{p.name}|{p.stat().st_size}"
         if key in cache:
-            out[p.name] = cache[key]; continue
+            rows = cache[key]
+            for r in rows:                       # caches from before orig_wh existed
+                if "orig_wh" not in r:
+                    r["orig_wh"] = upright_size(p)
+            out[p.name] = rows; continue
         try:
             img = load_bgr(p, work_side)
         except Exception as e:
@@ -83,6 +102,7 @@ def detect_faces(items, cache_file: Path, work_side=1600):
         det.setInputSize((w, h))
         _, faces = det.detect(img)
         rows = []
+        orig = upright_size(p)
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         for f in (faces if faces is not None else []):
             x, y, bw, bh = f[:4]
@@ -96,7 +116,7 @@ def detect_faces(items, cache_file: Path, work_side=1600):
                          "lm": [float(v) for v in f[4:14]],      # r-eye, l-eye, nose, r-mouth, l-mouth
                          "score": float(f[14]), "sharp": sharp,
                          "feat": [round(float(v), 5) for v in feat],
-                         "img_wh": [w, h]})
+                         "img_wh": [w, h], "orig_wh": orig})
         cache[key] = out[p.name] = rows
         n_new += 1
         if n_new % 25 == 0:
@@ -145,35 +165,80 @@ def pick_person(items, faces, window_days=45, min_sim=0.363, rounds=4):
     return chosen
 
 
-def quality(f):
-    """Higher = better for the movie: big, sharp, facing the camera, confidently detected."""
-    re_, le = np.array(f["lm"][0:2]), np.array(f["lm"][2:4])
-    nose = np.array(f["lm"][4:6])
-    eye_d = float(np.linalg.norm(le - re_))
-    mid = (re_ + le) / 2
-    frontal = 1 - min(1.0, abs(float(nose[0] - mid[0])) / (eye_d / 2 + 1e-6))   # 1 = straight on
-    size = min(1.0, eye_d / 60)                         # eye distance >= 60 px counts as full size
-    sharp = min(1.0, f["sharp"] / 300)
-    return 0.35 * frontal + 0.25 * size + 0.25 * sharp + 0.15 * f["score"]
+def pose(f):
+    """Where the head points, from the 5 landmarks (eye line levelled first):
+    yaw   = nose offset from the eyes' midpoint, in half eye-distances (0 = straight on,
+            +-1 = nose under an eye, i.e. turned well away)
+    pitch = nose height between eyes (0) and mouth (1); compared with the person's usual
+            value it tells looking up / down
+    roll  = eye-line angle in degrees (corrected by the alignment)
+    eye_px = eye distance in the full-resolution photo."""
+    lm = np.array(f["lm"]).reshape(5, 2)
+    a, b = (lm[0], lm[1]) if lm[0][0] < lm[1][0] else (lm[1], lm[0])
+    ang = np.arctan2(b[1] - a[1], b[0] - a[0])
+    R = np.array([[np.cos(-ang), -np.sin(-ang)], [np.sin(-ang), np.cos(-ang)]])
+    p = (lm - (a + b) / 2) @ R.T                          # eyes now level, midpoint at 0
+    eye_d = float(np.linalg.norm(b - a))
+    nose, mouth = p[2], (p[3] + p[4]) / 2
+    yaw = float(nose[0] / (eye_d / 2 + 1e-9))
+    pitch = float(nose[1] / (mouth[1] + 1e-9)) if mouth[1] > 1e-6 else 0.5
+    k = f.get("orig_wh", f["img_wh"])[0] / f["img_wh"][0]
+    return {"yaw": yaw, "pitch": pitch, "roll": float(np.degrees(ang)), "eye_px": eye_d * k}
 
 
-def choose_photos(items, chosen, count, min_quality=0.45):
-    """Spread `count` photos evenly over time: split the time span into `count` slots
-    and take the best photo in each (slots with no good photo are skipped)."""
-    cand = [(it["date"], it["sorted"].name, quality(chosen[it["sorted"].name]))
-            for it in items if it["sorted"].name in chosen]
-    cand = [c for c in cand if c[2] >= min_quality]
+def choose_photos(items, chosen, count, size, eye_dist="auto", max_upscale=1.0,
+                  max_yaw=0.25, max_pitch=0.12, max_roll=35.0):
+    """Pick the pictures for the movie.
+    1. Keep only front-facing faces: turned at most max_yaw, tilted up/down at most
+       max_pitch from the person's usual proportion, rolled at most max_roll degrees.
+    2. Decide one face size for the whole movie (eye distance in output pixels): 'auto'
+       = the largest size (up to 9% of the frame width) that 70% of those photos reach
+       without being enlarged more than max_upscale. Photos that would need more
+       enlarging are dropped, so nothing is blown up blurry.
+    3. Spread `count` pictures evenly over time; in each time slot take the most
+       straight-on, sharpest photo.
+    Returns (picks, eye_dist_px, report)."""
+    W, H = size
+    cand = []
+    for it in items:
+        n = it["sorted"].name
+        if n in chosen:
+            ps = pose(chosen[n])
+            cand.append((it["date"], n, ps))
+    report = {"person": len(cand)}
     if not cand:
-        return []
+        return [], 0, report
+    med_pitch = float(np.median([c[2]["pitch"] for c in cand]))
+    cand = [c for c in cand if abs(c[2]["yaw"]) <= max_yaw and abs(c[2]["pitch"] - med_pitch) <= max_pitch
+            and abs(c[2]["roll"]) <= max_roll]
+    report["front_facing"] = len(cand)
+    if not cand:
+        return [], 0, report
+    if eye_dist == "auto":
+        reach = np.array([c[2]["eye_px"] * max_upscale for c in cand])
+        eye_px = float(min(0.09 * W, np.percentile(reach, 30)))
+    else:
+        eye_px = float(eye_dist) * W
+    cand = [c for c in cand if c[2]["eye_px"] * max_upscale >= eye_px]
+    report["sharp_enough_size"] = len(cand)
+
+    def score(c):
+        f, ps = chosen[c[1]], c[2]
+        straight = 1 - min(1.0, abs(ps["yaw"]) / max_yaw)
+        level = 1 - min(1.0, abs(ps["pitch"] - med_pitch) / max_pitch)
+        sharp = min(1.0, f["sharp"] / 300)
+        return 0.45 * straight + 0.2 * level + 0.2 * sharp + 0.15 * f["score"]
+
     cand.sort()
     t0, t1 = cand[0][0].timestamp(), cand[-1][0].timestamp()
     span = max(1.0, t1 - t0)
     best = {}
-    for d, n, q in cand:
-        slot = min(count - 1, int((d.timestamp() - t0) / span * count))
+    for c in cand:
+        slot = min(count - 1, int((c[0].timestamp() - t0) / span * count))
+        q = score(c)
         if slot not in best or q > best[slot][2]:
-            best[slot] = (d, n, q)
-    return [best[s] for s in sorted(best)]
+            best[slot] = (c[0], c[1], q)
+    return [best[s] for s in sorted(best)], eye_px, report
 
 
 # ---------------------------------------------------------------- align + render
@@ -270,10 +335,18 @@ def main():
     ap.add_argument("--size", default="1920x1080", help="WIDTHxHEIGHT (default 1920x1080)")
     ap.add_argument("--fps", type=int, default=30)
     ap.add_argument("--eye-y", type=float, default=0.42, help="eye height, fraction of frame height")
-    ap.add_argument("--eye-dist", type=float, default=0.09, help="eye distance, fraction of frame width")
+    ap.add_argument("--eye-dist", default="auto",
+                    help="face size: eye distance as a fraction of frame width, or 'auto' (default): "
+                         "the biggest size most photos reach without enlarging, max 0.09")
+    ap.add_argument("--max-upscale", type=float, default=1.0,
+                    help="how much a photo may be enlarged to reach the face size (1.0 = never; "
+                         "photos needing more are left out)")
+    ap.add_argument("--max-yaw", type=float, default=0.25,
+                    help="how far the head may be turned left/right (0 = straight on, 1 = nose under an eye)")
+    ap.add_argument("--max-pitch", type=float, default=0.12,
+                    help="how far the head may tilt up/down from the person's usual look")
     ap.add_argument("--min-sim", type=float, default=0.363,
                     help="how sure it must be that a face is the person (0-1, default 0.363)")
-    ap.add_argument("--min-quality", type=float, default=0.45, help="skip worse photos (0-1)")
     ap.add_argument("--window-days", type=int, default=45,
                     help="the person's look is learned from photos within this many days")
     ap.add_argument("--label", choices=["none", "age", "date"], default="none")
@@ -293,17 +366,25 @@ def main():
     n_photos = sum(1 for it in items if not it["video"])
     print(f"  person found in {len(chosen)} of {n_photos} photos")
     count = a.count or round((a.duration or 60) * a.pps)
-    picks = choose_photos(items, chosen, count, a.min_quality)
+    picks, eye_px, rep = choose_photos(items, chosen, count, (W, H), a.eye_dist, a.max_upscale,
+                                       a.max_yaw, a.max_pitch)
+    print(f"  front-facing: {rep.get('front_facing', 0)}; big enough for the face size "
+          f"({eye_px:.0f} px between the eyes = {eye_px / W * 100:.1f}% of the width, "
+          f"enlarging at most x{a.max_upscale}): {rep.get('sharp_enough_size', 0)}")
     print(f"  chose {len(picks)} pictures (asked for {count}), "
           f"{picks[0][0]:%d.%m.%Y} - {picks[-1][0]:%d.%m.%Y}" if picks else "  nothing to show")
     if not picks:
         return
     birth = datetime.strptime(a.birth, "%Y-%m-%d").date() if a.birth else None
     render(picks, chosen, out / "sorted", out / "grow.mp4", (W, H), a.fps, a.pps, a.style, a.fade,
-           a.eye_y * H, a.eye_dist * W, a.label, birth)
-    (out / "grow_plan.txt").write_text("".join(
-        f"{k / a.pps:7.2f}s  {d:%Y-%m-%d %H:%M}  q={q:.2f}  sim={chosen[n]['sim']:.2f}  "
-        f"faces={chosen[n]['n_faces']}  {n}\n" for k, (d, n, q) in enumerate(picks)), encoding="utf-8")
+           a.eye_y * H, eye_px, a.label, birth)
+    lines = []
+    for k, (d, n, q) in enumerate(picks):
+        ps = pose(chosen[n])
+        lines.append(f"{k / a.pps:7.2f}s  {d:%Y-%m-%d %H:%M}  q={q:.2f}  sim={chosen[n]['sim']:.2f}  "
+                     f"yaw={ps['yaw']:+.2f}  pitch={ps['pitch']:.2f}  scale=x{eye_px / ps['eye_px']:.2f}  "
+                     f"faces={chosen[n]['n_faces']}  {n}\n")
+    (out / "grow_plan.txt").write_text("".join(lines), encoding="utf-8")
     secs = len(picks) / a.pps
     print(f"Done: {out / 'grow.mp4'}  ({len(picks)} pictures, {secs:.0f}s)")
 

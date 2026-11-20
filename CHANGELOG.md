@@ -3,6 +3,19 @@
 Versions v1-v5 were written before version control started, so only their
 descriptions are kept here; v5 is the first version stored in git.
 
+## grow_movie.py - 2026-11-20 - same face size, front-facing only (tested on a 2026 sample)
+- One face size for the whole movie (eye distance), `--eye-dist auto`: the biggest size
+  (max 9% of the width) that 70% of the photos reach without enlarging. Photos are only
+  scaled evenly (never stretched); `--max-upscale` (default 1.0 = never enlarge) drops
+  photos whose face is too small, so nothing is blown up blurry.
+- Head direction from the landmarks (`pose`): turn (yaw), up/down tilt (pitch, against the
+  person's usual proportion), roll. Only front-facing faces are kept (`--max-yaw 0.25`,
+  `--max-pitch 0.12`); in each time slot the most straight-on, sharpest photo wins.
+  Gaze can't be measured with these models - head direction is the proxy.
+- Person matching is iterative (references rebuilt from accepted faces), threshold 0.363.
+- Plan file lists yaw, pitch and scale per picture. Test (230 mixed 2026 photos): all
+  scales x0.25-x0.99, max |yaw| 0.23; 2 of 28 pictures were another child.
+
 ## grow_movie.py - 2026-11-20 - work in progress, NOT TESTED YET
 - New separate script: one person's face fixed in the middle while photos change, in
   date order ("watch them grow"). Finds faces + landmarks (OpenCV YuNet), follows the
