@@ -3,6 +3,12 @@
 Versions v1-v5 were written before version control started, so only their
 descriptions are kept here; v5 is the first version stored in git.
 
+## grow_movie.py - 2026-11-20 - use all good photos when there are fewer than asked
+- choose_photos: if fewer good photos than --count/--duration allow, use them all (the
+  time-slot method kept only 114 of 380 because photos come in bursts); if more, take the
+  best per time slot, then fill up with the best of the rest.
+- First full run (1,324 album photos): 380 pictures, 38 s.
+
 ## grow_movie.py - 2026-11-20 - same face size, front-facing only (tested on a 2026 sample)
 - One face size for the whole movie (eye distance), `--eye-dist auto`: the biggest size
   (max 9% of the width) that 70% of the photos reach without enlarging. Photos are only

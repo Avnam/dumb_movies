@@ -230,15 +230,23 @@ def choose_photos(items, chosen, count, size, eye_dist="auto", max_upscale=1.0,
         return 0.45 * straight + 0.2 * level + 0.2 * sharp + 0.15 * f["score"]
 
     cand.sort()
-    t0, t1 = cand[0][0].timestamp(), cand[-1][0].timestamp()
+    scored = [(c[0], c[1], score(c)) for c in cand]
+    if len(scored) <= count:                     # not more good photos than wanted: use them all
+        return scored, eye_px, report
+    # more than wanted: the best photo in each of `count` equal time slots first (spreads
+    # them over time), then fill up with the best of the rest - photos come in bursts,
+    # so many slots are empty
+    t0, t1 = scored[0][0].timestamp(), scored[-1][0].timestamp()
     span = max(1.0, t1 - t0)
     best = {}
-    for c in cand:
+    for c in scored:
         slot = min(count - 1, int((c[0].timestamp() - t0) / span * count))
-        q = score(c)
-        if slot not in best or q > best[slot][2]:
-            best[slot] = (c[0], c[1], q)
-    return [best[s] for s in sorted(best)], eye_px, report
+        if slot not in best or c[2] > best[slot][2]:
+            best[slot] = c
+    picked = {c[1] for c in best.values()}
+    rest = sorted((c for c in scored if c[1] not in picked), key=lambda c: -c[2])
+    picked |= {c[1] for c in rest[:count - len(picked)]}
+    return [c for c in scored if c[1] in picked], eye_px, report
 
 
 # ---------------------------------------------------------------- align + render
