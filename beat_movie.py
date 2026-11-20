@@ -161,6 +161,26 @@ def collect(inp: Path, out: Path, name_re=None):
 
 
 # ---------------------------------------------------------------- music
+def refine_attacks(y, sr, times, reach=0.025):
+    """Move each hit to the exact moment its sound starts: the steepest rise of the
+    loudness (1 ms steps) within +-25 ms, never past halfway to a neighbouring hit.
+    The coarse detector alone is off by up to ~40 ms, enough to feel off-rhythm."""
+    import numpy as np
+    step = max(1, sr // 1000)
+    win = step * 3
+    env = np.sqrt(np.convolve(y ** 2, np.ones(win) / win, "same")[::step] + 1e-12)
+    rise = np.diff(np.log(env), prepend=np.log(env[0]))
+    times = np.asarray(times, float)
+    out = times.copy()
+    for k, t in enumerate(times):
+        lo_t = max(t - reach, (times[k - 1] + t) / 2 if k else 0.0)
+        hi_t = min(t + reach, (times[k + 1] + t) / 2 if k + 1 < len(times) else t + reach)
+        lo, hi = int(lo_t * 1000), int(hi_t * 1000)
+        if hi - lo > 2 and hi < len(rise):
+            out[k] = (lo + int(np.argmax(rise[lo:hi]))) / 1000
+    return out
+
+
 def find_points(song: Path, mode: str, min_gap: float):
     import numpy as np
     sr, hop, nfft = 22050, 256, 1024
@@ -168,6 +188,7 @@ def find_points(song: Path, mode: str, min_gap: float):
                           "-f", "f32le", "-"], capture_output=True, check=True).stdout
     y = np.frombuffer(raw, dtype=np.float32)
     dur = len(y) / sr
+    y_orig = y
     y = np.concatenate([np.zeros(nfft // 2, np.float32), y])  # frame i is centred on i*hop
     # spectral flux: how much "new" sound appears in each ~23ms frame
     win = np.hanning(nfft).astype(np.float32)
@@ -204,6 +225,7 @@ def find_points(song: Path, mode: str, min_gap: float):
         frames = peaks
     times = frames * hop / sr
     strength = env[frames]
+    times = refine_attacks(y_orig, sr, times)
     # enforce minimum gap, keeping the stronger hit
     keep = []
     for t, s in sorted(zip(times, strength)):
@@ -249,7 +271,8 @@ def find_runs(points, max_step=0.35, tolerance=0.3, min_len=3, levels=None):
             else:
                 trend = "steady"
             step = float(np.median(np.diff([t for t, _ in hits])))
-            runs.append({"hits": hits, "idx": list(run_idx), "trend": trend, "step": step})
+            runs.append({"hits": hits, "idx": list(run_idx), "trend": trend, "step": step,
+                         "levels": [float(x) for x in v]})
 
     for i in range(1, len(points)):
         d = points[i][0] - points[i - 1][0]
@@ -380,6 +403,21 @@ def _run_style(run, i, d, seed):
     return "push" if _rng(seed, i, "push") < 0.5 else "pulse"
 
 
+def _strong_phase(levels, every):
+    """Which of the `every` possible offsets lands on the stronger hits (louder on average)."""
+    if every <= 1 or not levels:
+        return 0
+    return max(range(every), key=lambda p: sum(levels[p::every]) / max(1, len(levels[p::every])))
+
+
+def _zoom_ticks(ts, levels, step):
+    """The hits a zoom reacts to: every hit if they are >=150 ms apart, else every 2nd
+    hit, on the stronger of each pair."""
+    every = 1 if step >= 0.15 else 2
+    p = _strong_phase(levels, every)
+    return ts[p::every]
+
+
 def _build_slots(points, runs, song_dur, d, seed):
     """Timeline of slots (start, end, kind, clacks) for density d in 0..1."""
     gap = 2.5 - 2.0 * d                                    # between runs: 2.5 s .. 0.5 s
@@ -390,13 +428,14 @@ def _build_slots(points, runs, song_dur, d, seed):
         if len(r["hits"]) < 5 and r["trend"] != "louder":
             continue                                       # short bursts: treat as ordinary hits
         ts = [t for t, _ in r["hits"]]
-        blocks.append((ts[0], ts[-1] + r["step"], _run_style(r, i, d, seed), ts))
+        blocks.append((ts[0], ts[-1] + r["step"], _run_style(r, i, d, seed), ts,
+                       r.get("levels", []), r["step"]))
     slots, cursor = [], 0.0
     zones = []
-    for b0, b1, style, ts in blocks:
-        zones.append((cursor, b0)); cursor = b1
+    for b in blocks:
+        zones.append((cursor, b[0])); cursor = b[1]
     zones.append((cursor, song_dur))
-    in_run = lambda t: any(b0 - 0.05 <= t <= b1 for b0, b1, _, _ in blocks)
+    in_run = lambda t: any(b[0] - 0.05 <= t <= b[1] for b in blocks)
     free = [(t, s) for t, s in points if not in_run(t)]
 
     def zone_slots(z0, z1):
@@ -414,19 +453,20 @@ def _build_slots(points, runs, song_dur, d, seed):
         slots += zone_slots(z0, z1)
         if blk is None:
             continue
-        b0, b1, style, ts = blk
-        ends = ts[1:] + [b1]
+        b0, b1, style, ts, lv, step = blk
         if style == "flurry":
-            for k in range(0, len(ts), every):
-                end = ts[k + every] if k + every < len(ts) else b1
-                slots.append((ts[k], end, "plain", []))
+            # a new picture on every `every`-th hit, starting on the stronger hits
+            p = _strong_phase(lv, every)
+            marks = sorted(set([ts[0]] + ts[p::every]))
+            for k, m in enumerate(marks):
+                slots.append((m, marks[k + 1] if k + 1 < len(marks) else b1, "plain", []))
         elif style == "words":
             for k in range(0, len(ts), word):
-                chunk = ts[k:k + word]
+                chunk, chunk_lv = ts[k:k + word], lv[k:k + word]
                 end = ts[k + word] if k + word < len(ts) else b1
-                slots.append((chunk[0], end, "push", chunk))
+                slots.append((chunk[0], end, "push", _zoom_ticks(chunk, chunk_lv, step)))
         else:
-            slots.append((b0, b1, style, ts))
+            slots.append((b0, b1, style, _zoom_ticks(ts, lv, step)))
     # merge slots too short to see (under 2 frames) into the previous one
     out = []
     for s in slots:
@@ -508,52 +548,115 @@ def plan_runs(items, points, runs, song_dur, seed=1, video_target=3.5):
     return segs, d
 
 
-def zoom_curve(kind, clacks, t0, n_frames, step):
-    """Zoom factor for each frame of a photo segment."""
-    import math
-    rel = [c - t0 for c in clacks]
-    z = []
+def find_focus(items, neighbours=8, size=(160, 90)):
+    """Where to zoom in each photo: the part that differs most from nearby shots.
+    For a fixed camera (baby monitor, doorbell, webcam) the nearby shots share the same
+    background, so their median is the 'empty' scene and the difference is the subject.
+    Returns {file name: (x, y) as fractions}; pictures with no clear subject get the centre."""
+    import numpy as np
+    from PIL import Image, ImageFilter
+    photos = [it for it in items if not it["video"]]
+    small = {}
+    for it in photos:
+        try:
+            with Image.open(it["sorted"]) as im:
+                a = np.asarray(im.convert("L").resize(size), np.float32)
+            small[it["sorted"].name] = (im.size, (a - a.mean()) / (a.std() + 1e-6))  # even out brightness
+        except Exception:
+            pass
+    # prefer the middle: subjects are rarely at the very edge, fixed edges (bars, frames) always are
+    yy, xx = np.mgrid[0:size[1], 0:size[0]]
+    prior = np.exp(-(((xx / size[0] - 0.5) / 0.28) ** 2 + ((yy / size[1] - 0.5) / 0.30) ** 2) / 2)
+    names = [it["sorted"].name for it in photos if it["sorted"].name in small]
+    focus = {}
+    for i, name in enumerate(names):
+        shape, img = small[name]
+        near = [names[j] for j in sorted(range(len(names)), key=lambda j: abs(j - i))
+                if j != i and small[names[j]][0] == shape][:neighbours]
+        if len(near) < 3:
+            focus[name] = (0.5, 0.5); continue
+        bg = np.median(np.stack([small[n][1] for n in near]), axis=0)
+        diff = np.clip(np.abs(img - bg) * 60, 0, 255)
+        diff = np.asarray(Image.fromarray(diff.astype(np.uint8)).filter(ImageFilter.BoxBlur(10)), np.float32)
+        diff *= prior
+        y, x = np.unravel_index(np.argmax(diff), diff.shape)
+        clear = diff.max() > 2.0 * (diff.mean() + 1e-6)
+        focus[name] = ((x + 0.5) / size[0], (y + 0.5) / size[1]) if clear else (0.5, 0.5)
+    return focus
+
+
+def load_focus_file(path, items):
+    """Manual focus overrides, one per line:  <number or file name>, <x>, <y>
+    x, y are fractions of the picture (0,0 = top-left, 1,1 = bottom-right), e.g.  23, 0.6, 0.3
+    Numbers are positions in the sorted folder (#1 = first, as on the contact sheets)."""
+    out = {}
+    names = [it["sorted"].name for it in items]
+    for line in Path(path).read_text(encoding="utf-8").splitlines():
+        line = line.split("#", 1)[0].strip()            # '#' starts a comment
+        if not line:
+            continue
+        key, x, y = [p.strip() for p in line.split(",")]
+        name = names[int(key) - 1] if key.isdigit() else key
+        out[name] = (float(x), float(y))
+    return out
+
+
+ZOOM_STEPS = (1.0, 1.25, 1.5)
+
+
+def zoom_curve(kind, ticks, f0, n_frames, steps=ZOOM_STEPS):
+    """Zoom factor for each frame of a photo segment - hard jumps on the ticks, no gliding.
+    The segment opens on the first level; every later tick jumps to the next one:
+      push:  100% -> 125% -> 150% -> 100% ...
+      pull:  150% -> 125% -> 100% -> 150% ...
+      pulse: 100% -> 125% -> 100% ...
+    `f0` is the segment's first frame (absolute), so ticks land on the same frames as cuts."""
+    seq = {"push": list(steps), "pull": list(steps)[::-1], "pulse": [steps[0], steps[1]]}.get(kind)
+    if not seq:
+        return [1.0] * n_frames
+    tick_frames = sorted(round(c * FPS) - f0 for c in ticks)
+    tick_frames = [f for f in tick_frames if f > 0]
+    z, n = [], 0
     for f in range(n_frames):
-        t = f / FPS
-        if kind == "push":
-            v = 1 + step * sum(min(1.0, max(0.0, (t - c) / 0.05)) for c in rel)
-        elif kind == "pull":
-            v = 1 + step * len(rel) - step * sum(min(1.0, max(0.0, (t - c) / 0.05)) for c in rel)
-        elif kind == "pulse":
-            v = 1 + sum(0.10 * math.exp(-(t - c) / 0.10) for c in rel[::2] if t >= c)
-        else:
-            v = 1.0
-        z.append(min(v, 1.6))
+        while n < len(tick_frames) and tick_frames[n] <= f:
+            n += 1
+        z.append(seq[n % len(seq)])
     return z
 
 
-def render_photo_zoom(img: Path, zooms, seg: Path):
-    """Render a photo with a per-frame zoom (centre crop), piped to ffmpeg."""
+def render_photo_zoom(img: Path, zooms, seg: Path, focus=(0.5, 0.5)):
+    """Render a photo with a per-frame zoom, piped to ffmpeg. The zoom is centred on
+    `focus` (x, y as fractions of the picture), kept inside the picture."""
     from PIL import Image
     with Image.open(img) as im:
         im = im.convert("RGB")
         k = min(W / im.width, H / im.height)              # fit to the frame - enlarge small images too
         im = im.resize((max(1, round(im.width * k)), max(1, round(im.height * k))), Image.LANCZOS)
         canvas = Image.new("RGB", (W, H))
-        canvas.paste(im, ((W - im.width) // 2, (H - im.height) // 2))
+        ox, oy = (W - im.width) // 2, (H - im.height) // 2
+        canvas.paste(im, (ox, oy))
+        fx, fy = ox + focus[0] * im.width, oy + focus[1] * im.height   # focus in canvas pixels
+    cache = {}
     p = subprocess.Popen(["ffmpeg", "-y", "-v", "error", "-f", "rawvideo", "-pix_fmt", "rgb24",
                           "-s", f"{W}x{H}", "-r", str(FPS), "-i", "-", "-c:v", "libx264",
                           "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", str(seg)],
                          stdin=subprocess.PIPE)
     for z in zooms:
-        if z <= 1.001:
-            frame = canvas
-        else:
-            cw, ch = W / z, H / z
-            box = ((W - cw) / 2, (H - ch) / 2, (W + cw) / 2, (H + ch) / 2)
-            frame = canvas.resize((W, H), Image.BILINEAR, box=box)
-        p.stdin.write(frame.tobytes())
+        if z not in cache:                                # only a few levels: render each once
+            if z <= 1.001:
+                cache[z] = canvas.tobytes()
+            else:
+                cw, ch = W / z, H / z
+                x0 = min(max(fx - cw / 2, 0), W - cw)
+                y0 = min(max(fy - ch / 2, 0), H - ch)
+                cache[z] = canvas.resize((W, H), Image.LANCZOS, box=(x0, y0, x0 + cw, y0 + ch)).tobytes()
+        p.stdin.write(cache[z])
     p.stdin.close()
     if p.wait() != 0:
         raise RuntimeError(f"ffmpeg failed rendering {img.name}")
 
 
-def render_runs(items, song, out: Path, seed=1, video_target=3.5, step=0.02):
+def render_runs(items, song, out: Path, seed=1, video_target=3.5, focus=None):
     points, song_dur = find_points(song, "onsets", 0.06)
     levels = hit_levels(song, [t for t, _ in points])
     runs = find_runs(points, 0.35, 0.3, 3, levels)
@@ -577,9 +680,8 @@ def render_runs(items, song, out: Path, seed=1, video_target=3.5, step=0.02):
                  "-vf", VF + ",tpad=stop_mode=clone:stop=-1", "-frames:v", str(nframes),
                  "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-an", str(seg)])
         else:
-            # a visible step per hit, smaller for long bursts so the total stays ~30-40%
-            st = min(0.05, max(step, 0.35 / max(1, len(clacks))))
-            render_photo_zoom(prep_photo(it["sorted"], tmp), zoom_curve(kind, clacks, f0 / FPS, nframes, st), seg)
+            fc = focus.get(it["sorted"].name, (0.5, 0.5)) if focus else (0.5, 0.5)
+            render_photo_zoom(prep_photo(it["sorted"], tmp), zoom_curve(kind, clacks, f0, nframes), seg, fc)
         files.append(seg)
         f0 = f1
         print(f"\r  rendered {len(files)}/{len(segs)} segments", end="")
@@ -599,9 +701,12 @@ def render_runs(items, song, out: Path, seed=1, video_target=3.5, step=0.02):
 
 
 def render(items, song, out: Path, mode, min_gap, video_beats, section="whole",
-           big_gap=0.8, video_max=8.0, seed=1, video_target=3.5):
+           big_gap=0.8, video_max=8.0, seed=1, video_target=3.5, focus_mode="auto", focus_file=None):
     if section == "runs":
-        return render_runs(items, song, out, seed, video_target)
+        focus = find_focus(items) if focus_mode == "auto" else {}
+        if focus_file:
+            focus.update(load_focus_file(focus_file, items))
+        return render_runs(items, song, out, seed, video_target, focus)
     points, song_dur = find_points(song, mode, min_gap)
     print(f"Found {len(points)} {mode} in the song ({song_dur:.0f}s)")
     slots_needed = sum(video_beats if it["video"] else 1 for it in items)
@@ -707,6 +812,11 @@ def main():
                     help="runs mode: change it for a different (repeatable) mix of styles")
     ap.add_argument("--video-target", type=float, default=3.5,
                     help="runs mode: how long a video plays, in seconds")
+    ap.add_argument("--focus", choices=["auto", "center"], default="auto",
+                    help="runs mode: where zooms aim. auto = what differs from nearby shots "
+                         "(good for a fixed camera); center = the middle")
+    ap.add_argument("--focus-file", default=None,
+                    help="runs mode: manual focus per picture, lines of '<number or name>, x, y'")
     ap.add_argument("--name", default=None,
                     help=r"only files whose name matches this regex, e.g. _screenshot\.jpg$ or ^IMG_")
     a = ap.parse_args()
@@ -718,7 +828,7 @@ def main():
     if a.sort_only or not a.song:
         return
     render(items, Path(a.song).resolve(), out, a.mode, a.min_gap, a.video_beats, a.section,
-           a.gap, a.video_max, a.seed, a.video_target)
+           a.gap, a.video_max, a.seed, a.video_target, a.focus, a.focus_file)
 
 
 if __name__ == "__main__":

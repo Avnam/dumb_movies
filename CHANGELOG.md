@@ -3,6 +3,22 @@
 Versions v1-v5 were written before version control started, so only their
 descriptions are kept here; v5 is the first version stored in git.
 
+## v8 - 2026-11-20 - exact timing, hard zoom jumps, zoom on the subject
+- Timing: each hit is moved to the exact start of its sound (`refine_attacks`, 1 ms steps).
+  Before: hits were up to +-40 ms off (10-90%), enough to feel off-rhythm at 11 clacks/s;
+  now +-16 ms with median 0 (`tools/check_timing.py`). Applies to all modes, so movies from
+  earlier versions come out very slightly different - rebuild those from their git tag.
+- Zoom is now hard jumps, no gliding: push 100 -> 125 -> 150 -> 100%, pull 150 -> 125 -> 100%,
+  pulse 100 <-> 125%. Jumps on every hit if hits are >=150 ms apart, else every 2nd hit -
+  always on the stronger (louder) of each pair. Flurries also start on the stronger hits.
+- Zoom aims at the subject: `find_focus` compares each photo with nearby shots (a fixed
+  camera's background) and picks what stands out, favouring the middle. `--focus center`
+  turns it off; `--focus-file` gives manual points (`<number>, x, y`) that win over auto.
+- New tools: `check_timing.py`, `focus_sheet.py` (where zooms aim), `grid_sheet.py` (read
+  coordinates for a focus file). `verify_runs.py` now checks jumps land on their frame and
+  the picture is still between them.
+- Why: feedback - "zoom" meant jumps (100/125/150%) on the child, and the beat felt off.
+
 ## v7 - 2026-11-20 - "runs" mode: zoom and flurries on bursts of fast hits
 - New `--section runs`. Finds runs: 3+ hits in a row with nearly the same short spacing
   (`find_runs`), and whether each gets louder/softer from the loudness after each hit

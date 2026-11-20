@@ -43,17 +43,13 @@ on, off, n_hits = [], [], 0
 for it, s, e, kind, clacks in segs:
     if kind not in ("push", "pull", "pulse"):
         continue
-    hits = clacks[::2] if kind == "pulse" else clacks
     f0, f1 = round(s * fps), round(e * fps)
-    hit_frames = set()
-    for c in hits:
-        f = round(c * fps)
-        if f0 < f < f1 - 1:
-            n_hits += 1
-            on.append(diff[f:f + 3].max())
-            hit_frames.update(range(f - 1, f + 6))
-    off += [diff[f] for f in range(f0 + 2, f1 - 1) if f not in hit_frames]
-print(f"zoom segments: {sum(1 for x in segs if x[3] in ('push', 'pull', 'pulse'))}, hits checked {n_hits}")
-print(f"  movement right after a hit: median {np.median(on):.2f}, "
-      f"{np.mean(np.array(on) > 0.5) * 100:.0f}% of hits move the picture")
-print(f"  movement between hits:      median {np.median(off) if off else 0:.2f}")
+    tick_frames = {round(c * fps) for c in clacks if f0 < round(c * fps) < f1}   # zoom jumps here
+    for f in tick_frames:
+        n_hits += 1
+        on.append(diff[f])                                 # the jump frame itself
+    off += [diff[f] for f in range(f0 + 1, f1) if f not in tick_frames]
+print(f"zoom segments: {sum(1 for x in segs if x[3] in ('push', 'pull', 'pulse'))}, ticks checked {n_hits}")
+print(f"  change on the tick frame:   median {np.median(on):.2f}, "
+      f"{np.mean(np.array(on) > 1.0) * 100:.0f}% of ticks jump exactly on their frame")
+print(f"  change between ticks:       median {np.median(off) if off else 0:.2f} (0 = still, no gliding)")

@@ -31,6 +31,8 @@ python beat_movie.py INPUT [SONG] OUTPUT [options]
 | `--section runs` | | bursts of fast hits get varied styles: flurry (crescendo), zoom out (softer), zoom in / pulse / "words" (steady); big hits between bursts |
 | `--seed` | 1 | `runs`: a different, repeatable mix of styles |
 | `--video-target` | 3.5 | `runs`: how long a video plays (s) |
+| `--focus` | auto | `runs`: where zooms aim - `auto` (what differs from nearby shots; best for a fixed camera) or `center` |
+| `--focus-file` | | `runs`: manual focus, lines of `<number>, x, y` (fractions; numbers as on the contact sheets) |
 | `--section start` / `end` | | a new picture on every hit of the song's opening / finale |
 | `--section whole` | | whole song, strongest hits, no minimum gap |
 | `--video-beats` | 2 | `start`/`end`/`whole`: how many hits a video lasts |
@@ -58,7 +60,11 @@ python beat_movie.py work\sorted song.mp3 work\render --section big --gap 0.8
 | `tools/verify_big_hits.py` | Checks a `big` movie: cuts on hits, biggest hits used. |
 | `tools/verify_cuts.py` | Checks a `start`/`end` movie: cuts on hits. |
 | `tools/find_runs.py` | Lists the runs (bursts of fast hits) in a song and whether they get louder/softer. |
-| `tools/verify_runs.py` | Checks a `runs` movie: picture changes on the planned frames, zooms move on hits. |
+| `tools/verify_runs.py` | Checks a `runs` movie: picture changes and zoom jumps on their frames, still between. |
+| `tools/check_timing.py` | How close detected hits are to the real sound; audio delay in a movie. |
+| `tools/focus_sheet.py` | Contact sheet showing where each zoom aims (`--focus-file` to include overrides). |
+| `tools/grid_sheet.py` | Chosen pictures, large, with a 10% grid - to read coordinates for a focus file. |
+| `focus/` | Manual focus files per run (small text files, versioned). |
 | `setup.ps1` | Installs Python, FFmpeg, Git and the Python packages (pinned), then checks them. |
 | `requirements.txt` | The Python packages and their exact versions. |
 | `CHANGELOG.md` | What changed in the script, version by version, and why. |
