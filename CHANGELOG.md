@@ -3,6 +3,15 @@
 Versions v1-v5 were written before version control started, so only their
 descriptions are kept here; v5 is the first version stored in git.
 
+## grow_movie.py - 2026-11-20 - pace per 10 s, exclude/dwell edits, review pictures
+- `--per10 N`: pictures per 10 seconds (e.g. 37); frames follow the exact running time,
+  so fractional paces keep the right total.
+- `--edits FILE`: `exclude <name>` / `dwell <name> <seconds>` lines (grow/ holds them).
+- `--dwell-last` (default 3 s) on the last picture.
+- No length given = all good photos (was 60 s).
+- `--save-frames`: aligned pictures saved as NNNN_date__original.jpg; tools/review_sheets.py
+  makes numbered pages of them for choosing.
+
 ## grow_movie.py - 2026-11-20 - use all good photos when there are fewer than asked
 - choose_photos: if fewer good photos than --count/--duration allow, use them all (the
   time-slot method kept only 114 of 380 because photos come in bursts); if more, take the

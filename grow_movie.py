@@ -297,29 +297,40 @@ def put_label(frame, text):
     return frame
 
 
-def render(picks, chosen, folder: Path, out_file: Path, size, fps, pps, style, fade,
-           eye_y, eye_dist, label, birth):
+def render(picks, chosen, folder: Path, out_file: Path, size, fps, durations, style, fade,
+           eye_y, eye_dist, label, birth, save_dir=None):
+    """durations[k] = seconds picture k is shown. Frames are placed on the exact running
+    time (rounded per picture), so a pace like 3.7 pictures/s keeps the right total.
+    save_dir: also save each aligned picture as NNNN_YYYY-MM-DD__<original name>.jpg"""
+    import cv2
     W, H = size
-    frames_per_pic = max(1, round(fps / pps))
+    if save_dir:
+        save_dir.mkdir(parents=True, exist_ok=True)
+        for old in save_dir.glob("*.jpg"):
+            old.unlink()
     p = subprocess.Popen(["ffmpeg", "-y", "-v", "error", "-f", "rawvideo", "-pix_fmt", "bgr24",
                           "-s", f"{W}x{H}", "-r", str(fps), "-i", "-", "-c:v", "libx264",
                           "-preset", "medium", "-crf", "18", "-pix_fmt", "yuv420p", str(out_file)],
                          stdin=subprocess.PIPE)
     prev = None
     nf = max(1, round(fade * fps)) if style == "crossfade" else 0
+    t, f_done = 0.0, 0
     for k, (d, name, q) in enumerate(picks):
         img = align(load_bgr(folder / name), chosen[name], size, eye_y, eye_dist)
         text = (age_text(d, birth) if label == "age" and birth else
                 f"{d:%d.%m.%Y}" if label == "date" else "")
         cur = put_label(img, text)
-        if prev is not None and nf:
-            for i in range(1, nf + 1):                   # blend prev -> cur
-                a = i / (nf + 1)
-                p.stdin.write((prev * (1 - a) + cur * a).astype(np.uint8).tobytes())
-            hold = max(1, frames_per_pic - nf)
-        else:
-            hold = frames_per_pic
-        for _ in range(hold):
+        if save_dir:
+            cv2.imwrite(str(save_dir / f"{k + 1:04d}_{d:%Y-%m-%d}__{Path(name).stem}.jpg"), cur,
+                        [cv2.IMWRITE_JPEG_QUALITY, 90])
+        t += durations[k]
+        n_frames = max(1, round(t * fps) - f_done)
+        f_done += n_frames
+        fades = min(nf, n_frames - 1) if prev is not None else 0
+        for i in range(1, fades + 1):                    # blend prev -> cur
+            a = i / (fades + 1)
+            p.stdin.write((prev * (1 - a) + cur * a).astype(np.uint8).tobytes())
+        for _ in range(n_frames - fades):
             p.stdin.write(cur.tobytes())
         prev = cur.astype(np.float32) if nf else cur
         print(f"\r  rendered {k + 1}/{len(picks)} pictures", end="")
@@ -327,6 +338,29 @@ def render(picks, chosen, folder: Path, out_file: Path, size, fps, pps, style, f
     p.stdin.close()
     if p.wait() != 0:
         raise RuntimeError("ffmpeg failed")
+    return f_done / fps
+
+
+def load_edits(path):
+    """Edits file, one per line ('#' starts a comment):
+         exclude <original file name, or part of it>
+         dwell   <original file name, or part of it>  <seconds>
+       Names are the photo's original name (as in the review folder after the '__')."""
+    excl, dwell = [], {}
+    if not path:
+        return excl, dwell
+    for line in Path(path).read_text(encoding="utf-8").splitlines():
+        line = line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        parts = line.split()
+        if parts[0] == "exclude" and len(parts) >= 2:
+            excl.append(parts[1])
+        elif parts[0] == "dwell" and len(parts) >= 3:
+            dwell[parts[1]] = float(parts[2])
+        else:
+            sys.exit(f"Can't read edits line: {line}")
+    return excl, dwell
 
 
 def main():
@@ -335,11 +369,19 @@ def main():
     ap.add_argument("output", help="output folder")
     ap.add_argument("--name", help="only files whose name matches this regex")
     ap.add_argument("--style", choices=["flipbook", "crossfade"], default="flipbook")
-    ap.add_argument("--pps", type=float, default=10, help="pictures per second (default 10)")
+    pace = ap.add_mutually_exclusive_group()
+    pace.add_argument("--pps", type=float, help="pictures per second (default 10)")
+    pace.add_argument("--per10", type=float, help="pictures per 10 seconds, e.g. 37 (= 3.7 per second)")
     ap.add_argument("--fade", type=float, default=0.25, help="crossfade length in seconds")
     g = ap.add_mutually_exclusive_group()
-    g.add_argument("--duration", type=float, help="movie length in seconds")
-    g.add_argument("--count", type=int, help="number of pictures")
+    g.add_argument("--duration", type=float,
+                   help="movie length in seconds (default: as long as all good photos need)")
+    g.add_argument("--count", type=int, help="number of pictures (default: all good photos)")
+    ap.add_argument("--edits", help="file of 'exclude <name>' and 'dwell <name> <seconds>' lines")
+    ap.add_argument("--dwell-last", type=float, default=3.0,
+                    help="seconds to stay on the last picture (default 3; 0 = normal pace)")
+    ap.add_argument("--save-frames", action="store_true",
+                    help="also save each aligned picture to OUTPUT/aligned/ (numbered, for review)")
     ap.add_argument("--size", default="1920x1080", help="WIDTHxHEIGHT (default 1920x1080)")
     ap.add_argument("--fps", type=int, default=30)
     ap.add_argument("--eye-y", type=float, default=0.42, help="eye height, fraction of frame height")
@@ -373,28 +415,51 @@ def main():
     chosen = pick_person(items, faces, a.window_days, a.min_sim)
     n_photos = sum(1 for it in items if not it["video"])
     print(f"  person found in {len(chosen)} of {n_photos} photos")
-    count = a.count or round((a.duration or 60) * a.pps)
+    excl, dwell = load_edits(a.edits)
+    for pat in excl:
+        hits = [n for n in chosen if pat in n]
+        if not hits:
+            print(f"  note: exclude '{pat}' matched no photo")
+        for n in hits:
+            del chosen[n]
+    if excl:
+        print(f"  excluded by the edits file: {len(excl)} rule(s)")
+    pps = a.pps or (a.per10 / 10 if a.per10 else 10.0)
+    count = a.count or (round(a.duration * pps) if a.duration else 10 ** 6)
     picks, eye_px, rep = choose_photos(items, chosen, count, (W, H), a.eye_dist, a.max_upscale,
                                        a.max_yaw, a.max_pitch)
     print(f"  front-facing: {rep.get('front_facing', 0)}; big enough for the face size "
           f"({eye_px:.0f} px between the eyes = {eye_px / W * 100:.1f}% of the width, "
           f"enlarging at most x{a.max_upscale}): {rep.get('sharp_enough_size', 0)}")
-    print(f"  chose {len(picks)} pictures (asked for {count}), "
+    asked = "all good photos" if count == 10 ** 6 else f"asked for {count}"
+    print(f"  chose {len(picks)} pictures ({asked}), "
           f"{picks[0][0]:%d.%m.%Y} - {picks[-1][0]:%d.%m.%Y}" if picks else "  nothing to show")
     if not picks:
         return
+    durations = [1 / pps] * len(picks)
+    used = set()
+    for k, (d, n, q) in enumerate(picks):
+        for pat, secs in dwell.items():
+            if pat in n:
+                durations[k] = secs; used.add(pat)
+    for pat in set(dwell) - used:
+        print(f"  note: dwell '{pat}' matched no chosen picture")
+    if a.dwell_last > 0:
+        durations[-1] = max(durations[-1], a.dwell_last)
     birth = datetime.strptime(a.birth, "%Y-%m-%d").date() if a.birth else None
-    render(picks, chosen, out / "sorted", out / "grow.mp4", (W, H), a.fps, a.pps, a.style, a.fade,
-           a.eye_y * H, eye_px, a.label, birth)
-    lines = []
+    total = render(picks, chosen, out / "sorted", out / "grow.mp4", (W, H), a.fps, durations, a.style,
+                   a.fade, a.eye_y * H, eye_px, a.label, birth,
+                   out / "aligned" if a.save_frames else None)
+    lines, t = [], 0.0
     for k, (d, n, q) in enumerate(picks):
         ps = pose(chosen[n])
-        lines.append(f"{k / a.pps:7.2f}s  {d:%Y-%m-%d %H:%M}  q={q:.2f}  sim={chosen[n]['sim']:.2f}  "
-                     f"yaw={ps['yaw']:+.2f}  pitch={ps['pitch']:.2f}  scale=x{eye_px / ps['eye_px']:.2f}  "
-                     f"faces={chosen[n]['n_faces']}  {n}\n")
+        lines.append(f"#{k + 1:<4d} {t:7.2f}s  +{durations[k]:.2f}s  {d:%Y-%m-%d %H:%M}  q={q:.2f}  "
+                     f"sim={chosen[n]['sim']:.2f}  yaw={ps['yaw']:+.2f}  pitch={ps['pitch']:.2f}  "
+                     f"scale=x{eye_px / ps['eye_px']:.2f}  faces={chosen[n]['n_faces']}  {n}\n")
+        t += durations[k]
     (out / "grow_plan.txt").write_text("".join(lines), encoding="utf-8")
-    secs = len(picks) / a.pps
-    print(f"Done: {out / 'grow.mp4'}  ({len(picks)} pictures, {secs:.0f}s)")
+    print(f"Done: {out / 'grow.mp4'}  ({len(picks)} pictures, {total:.1f}s at {pps * 10:g} per 10 s"
+          f"{', ' + str(sum(1 for x in durations if x != 1 / pps)) + ' dwelling' if any(x != 1 / pps for x in durations) else ''})")
 
 
 if __name__ == "__main__":
