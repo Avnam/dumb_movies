@@ -107,35 +107,41 @@ def detect_faces(items, cache_file: Path, work_side=1600):
     return out
 
 
-def pick_person(items, faces, window_days=45, min_sim=0.30):
+def pick_person(items, faces, window_days=45, min_sim=0.363, rounds=4):
     """Choose the person's face in each photo (or none).
-    Reference for a date = mean fingerprint of single-face photos within +-window_days
-    (most single-face photos in a person's album are of that person). Each photo's face
-    most similar to its reference wins, if similarity >= min_sim."""
+    Start: the reference for a date is the mean fingerprint of single-face photos near
+    that date. Then, a few rounds: in each photo take the face most like its reference
+    (if similarity >= min_sim), and rebuild the references from those accepted faces only.
+    This locks onto the person who appears most consistently, and drops others who happen
+    to be alone in a photo. 0.363 is the match threshold recommended for SFace."""
     dated = [(it["date"], it["sorted"].name) for it in items if not it["video"]]
-    single = [(d, np.array(faces[n][0]["feat"])) for d, n in dated if len(faces.get(n, [])) == 1]
-    if not single:
+    pool = [(d, np.array(faces[n][0]["feat"])) for d, n in dated if len(faces.get(n, [])) == 1]
+    if not pool:
         sys.exit("No single-face photos to learn the person from.")
-    # 1st pass reference from all single-face photos, then drop outliers (other people
-    # alone in a photo) and rebuild, so the reference is clean
+
     def reference(d, pool):
         near = [f for dd, f in pool if abs((dd - d).days) <= window_days]
         if len(near) < 3:
             near = [f for _, f in sorted(pool, key=lambda x: abs((x[0] - d).days))[:5]]
         m = np.mean(near, axis=0)
         return m / (np.linalg.norm(m) + 1e-9)
-    clean = [(d, f) for d, f in single if float(f @ reference(d, single)) >= min_sim]
-    pool = clean if len(clean) >= 5 else single
+
     chosen = {}
-    for d, n in dated:
-        fs = faces.get(n, [])
-        if not fs:
-            continue
-        ref = reference(d, pool)
-        sims = [float(np.array(f["feat"]) @ ref) for f in fs]
-        i = int(np.argmax(sims))
-        if sims[i] >= min_sim:
-            chosen[n] = dict(fs[i], sim=sims[i], n_faces=len(fs))
+    for r in range(rounds):
+        chosen = {}
+        for d, n in dated:
+            fs = faces.get(n, [])
+            if not fs:
+                continue
+            ref = reference(d, pool)
+            sims = [float(np.array(f["feat"]) @ ref) for f in fs]
+            i = int(np.argmax(sims))
+            if sims[i] >= min_sim:
+                chosen[n] = dict(fs[i], sim=sims[i], n_faces=len(fs))
+        new_pool = [(d, np.array(chosen[n]["feat"])) for d, n in dated if n in chosen]
+        if len(new_pool) < 5:
+            break
+        pool = new_pool
     return chosen
 
 
@@ -265,8 +271,8 @@ def main():
     ap.add_argument("--fps", type=int, default=30)
     ap.add_argument("--eye-y", type=float, default=0.42, help="eye height, fraction of frame height")
     ap.add_argument("--eye-dist", type=float, default=0.09, help="eye distance, fraction of frame width")
-    ap.add_argument("--min-sim", type=float, default=0.30,
-                    help="how sure it must be that a face is the person (0-1, default 0.30)")
+    ap.add_argument("--min-sim", type=float, default=0.363,
+                    help="how sure it must be that a face is the person (0-1, default 0.363)")
     ap.add_argument("--min-quality", type=float, default=0.45, help="skip worse photos (0-1)")
     ap.add_argument("--window-days", type=int, default=45,
                     help="the person's look is learned from photos within this many days")
