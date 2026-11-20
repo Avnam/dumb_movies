@@ -1,0 +1,7 @@
+# Photos, videos and rendered movies are large and can be rebuilt from the
+# Takeout zip + the song, so they are not versioned.
+monitor_movie/
+*.mp4
+*.mp3
+*.zip
+__pycache__/
