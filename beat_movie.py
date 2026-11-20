@@ -148,7 +148,8 @@ def collect(inp: Path, out: Path, name_re=None):
     sorted_dir = out / "sorted"
     sorted_dir.mkdir(parents=True, exist_ok=True)
     for i, it in enumerate(items, 1):
-        name = f"{i:04d}_{it['date']:%Y-%m-%d_%H%M%S}_{it['path'].name}"
+        orig = re.sub(r"^\d{4}_\d{4}-\d{2}-\d{2}_\d{6}_", "", it["path"].name)  # from an earlier sort
+        name = f"{i:04d}_{it['date']:%Y-%m-%d_%H%M%S}_{orig}"
         dest = sorted_dir / name
         if not dest.exists():
             shutil.copy2(it["path"], dest)
@@ -212,6 +213,54 @@ def find_points(song: Path, mode: str, min_gap: float):
         else:
             keep.append((t, s))
     return [(float(t), float(s)) for t, s in keep], dur
+
+
+def hit_levels(song: Path, times, window=0.08):
+    """Loudness (RMS) just after each hit - used to tell if a run gets louder or softer."""
+    import numpy as np
+    sr = 22050
+    raw = subprocess.run(["ffmpeg", "-v", "error", "-i", str(song), "-ac", "1", "-ar", str(sr),
+                          "-f", "f32le", "-"], capture_output=True, check=True).stdout
+    y = np.frombuffer(raw, dtype=np.float32)
+    n = int(window * sr)
+    return [float(np.sqrt(np.mean(y[int(t * sr):int(t * sr) + n] ** 2) + 1e-12)) for t in times]
+
+
+def find_runs(points, max_step=0.35, tolerance=0.3, min_len=3, levels=None):
+    """Runs = min_len+ hits in a row, each at most max_step apart, with nearly the same
+    spacing (within `tolerance`). Each run gets a trend from the loudness of its hits:
+    'louder', 'softer' or 'steady'."""
+    import numpy as np
+    lv = levels if levels is not None else [s for _, s in points]
+    runs, cur = [], [0]
+
+    def close(run_idx):
+        if len(run_idx) >= min_len:
+            hits = [points[i] for i in run_idx]
+            v = np.array([lv[i] for i in run_idx])
+            body = v[:-1] if len(v) >= 5 else v            # one loud/soft accent at the end isn't a trend
+            h = len(body) // 2
+            ratio = body[-h:].mean() / (body[:h].mean() or 1) if h else 1.0
+            rising = np.mean(np.diff(body) > 0) if len(body) > 1 else 0.5
+            if ratio > 1.2 and rising >= 0.6:
+                trend = "louder"
+            elif ratio < 1 / 1.2 and rising <= 0.4:
+                trend = "softer"
+            else:
+                trend = "steady"
+            step = float(np.median(np.diff([t for t, _ in hits])))
+            runs.append({"hits": hits, "idx": list(run_idx), "trend": trend, "step": step})
+
+    for i in range(1, len(points)):
+        d = points[i][0] - points[i - 1][0]
+        if d <= max_step and (len(cur) < 2 or
+                              abs(d - (points[cur[-1]][0] - points[cur[-2]][0])) <= tolerance * d):
+            cur.append(i)
+        else:
+            close(cur)
+            cur = [i - 1, i] if d <= max_step else [i]
+    close(cur)
+    return runs
 
 
 def fit_points(points, n_slots):
@@ -305,8 +354,254 @@ def plan_big(items, points, song_dur, gap, video_max):
     return bounds, spans
 
 
+# ---------------------------------------------------------------- "runs" mode
+# Bursts of fast, evenly spaced hits ("runs") each get a style, varied through the song:
+#   flurry - a new picture on every hit            (runs that get louder)
+#   pull   - one picture that steps out on each hit (runs that get softer)
+#   push   - one picture that steps in on each hit  (steady runs, some of them)
+#   pulse  - one picture, a zoom pulse on every other hit (steady runs, some of them)
+#   words  - a new picture every few hits, pushing in within each  (steady runs, some)
+# Between runs the picture changes on big hits. A "density" knob is searched so the
+# files exactly fill the song. The variety is seeded, so the same settings give the same movie.
+
+def _rng(seed, i, salt):
+    import random
+    return random.Random(f"{seed}-{i}-{salt}").random()
+
+
+def _run_style(run, i, d, seed):
+    n = len(run["hits"])
+    if run["trend"] == "louder":
+        return "flurry"
+    if run["trend"] == "softer":
+        return "pull"
+    if n >= 8 and _rng(seed, i, "words") < d:
+        return "words"
+    return "push" if _rng(seed, i, "push") < 0.5 else "pulse"
+
+
+def _build_slots(points, runs, song_dur, d, seed):
+    """Timeline of slots (start, end, kind, clacks) for density d in 0..1."""
+    gap = 2.5 - 2.0 * d                                    # between runs: 2.5 s .. 0.5 s
+    word = max(4, round(12 - 6 * d))                       # words: 12 .. 6 hits per picture
+    every = 1 if d > 0.66 else 2 if d > 0.33 else 3        # flurry: new picture every 1..3 hits
+    blocks = []
+    for i, r in enumerate(runs):
+        if len(r["hits"]) < 5 and r["trend"] != "louder":
+            continue                                       # short bursts: treat as ordinary hits
+        ts = [t for t, _ in r["hits"]]
+        blocks.append((ts[0], ts[-1] + r["step"], _run_style(r, i, d, seed), ts))
+    slots, cursor = [], 0.0
+    zones = []
+    for b0, b1, style, ts in blocks:
+        zones.append((cursor, b0)); cursor = b1
+    zones.append((cursor, song_dur))
+    in_run = lambda t: any(b0 - 0.05 <= t <= b1 for b0, b1, _, _ in blocks)
+    free = [(t, s) for t, s in points if not in_run(t)]
+
+    def zone_slots(z0, z1):
+        if z1 - z0 < 0.05:
+            return []
+        cand = sorted([p for p in free if z0 + gap <= p[0] <= z1 - gap], key=lambda p: -p[1])
+        cuts = []
+        for t, _ in cand:
+            if all(abs(t - c) >= gap for c in cuts):
+                cuts.append(t)
+        b = [z0] + sorted(cuts) + [z1]
+        return [(b[k], b[k + 1], "plain", []) for k in range(len(b) - 1)]
+
+    for (z0, z1), blk in zip(zones, blocks + [None]):
+        slots += zone_slots(z0, z1)
+        if blk is None:
+            continue
+        b0, b1, style, ts = blk
+        ends = ts[1:] + [b1]
+        if style == "flurry":
+            for k in range(0, len(ts), every):
+                end = ts[k + every] if k + every < len(ts) else b1
+                slots.append((ts[k], end, "plain", []))
+        elif style == "words":
+            for k in range(0, len(ts), word):
+                chunk = ts[k:k + word]
+                end = ts[k + word] if k + word < len(ts) else b1
+                slots.append((chunk[0], end, "push", chunk))
+        else:
+            slots.append((b0, b1, style, ts))
+    # merge slots too short to see (under 2 frames) into the previous one
+    out = []
+    for s in slots:
+        if out and s[1] - s[0] < 2 / FPS:
+            p = out[-1]; out[-1] = (p[0], s[1], p[2], p[3])
+        else:
+            out.append(s)
+    return out
+
+
+def _assign(items, slots, video_target):
+    """Walk files and slots in order. A video takes slots until it has played ~video_target s."""
+    segs, k = [], 0
+    for idx, it in enumerate(items):
+        if k >= len(slots):
+            return segs, len(items) - idx, 0
+        if it["video"]:
+            want = min(video_len(it["sorted"]), video_target)
+            e = k
+            while e + 1 < len(slots) and slots[e][1] - slots[k][0] < want * 0.85:
+                e += 1
+            segs.append((it, slots[k][0], slots[e][1], "video", []))
+            k = e + 1
+        else:
+            s = slots[k]
+            segs.append((it, s[0], s[1], s[2], s[3]))
+            k += 1
+    return segs, 0, len(slots) - k
+
+
+def _fine_tune(slots, points, items, video_target):
+    """Make the files fit exactly: split the longest plain slot at its strongest hit
+    (one more picture) or merge the shortest plain slot into its neighbour (one fewer)."""
+    slots = list(slots)
+    for _ in range(40):
+        segs, unused, left = _assign(items, slots, video_target)
+        if unused:
+            best = None
+            for k, (a, b, kind, cl) in enumerate(slots):
+                if kind != "plain":
+                    continue
+                inside = [p for p in points if a + 0.4 <= p[0] <= b - 0.4]
+                if inside and (best is None or b - a > best[0]):
+                    best = (b - a, k, max(inside, key=lambda p: p[1])[0])
+            if not best:
+                break
+            _, k, t = best
+            a, b, kind, cl = slots[k]
+            slots[k:k + 1] = [(a, t, "plain", []), (t, b, "plain", [])]
+        elif left:
+            plain = [k for k, s in enumerate(slots) if s[2] == "plain" and k > 0]
+            if not plain:
+                break
+            k = min(plain, key=lambda k: slots[k][1] - slots[k][0])
+            p = slots[k - 1]
+            slots[k - 1:k + 1] = [(p[0], slots[k][1], p[2], p[3])]
+        else:
+            break
+    return slots
+
+
+def plan_runs(items, points, runs, song_dur, seed=1, video_target=3.5):
+    best = None
+    for i in range(101):
+        d = i / 100
+        slots = _build_slots(points, runs, song_dur, d, seed)
+        segs, unused, left = _assign(items, slots, video_target)
+        score = (unused + left, abs(d - 0.5))
+        if best is None or score < best[0]:
+            best = (score, d, slots)
+    _, d, slots = best
+    slots = _fine_tune(slots, points, items, video_target)
+    segs, unused, left = _assign(items, slots, video_target)
+    if left:   # slots left over: the last file holds to the end
+        it, a, _, kind, cl = segs[-1]
+        segs[-1] = (it, a, song_dur, kind, cl)
+    if unused:
+        print(f"  note: {unused} files did not fit and were left out (the last ones)")
+    return segs, d
+
+
+def zoom_curve(kind, clacks, t0, n_frames, step):
+    """Zoom factor for each frame of a photo segment."""
+    import math
+    rel = [c - t0 for c in clacks]
+    z = []
+    for f in range(n_frames):
+        t = f / FPS
+        if kind == "push":
+            v = 1 + step * sum(min(1.0, max(0.0, (t - c) / 0.05)) for c in rel)
+        elif kind == "pull":
+            v = 1 + step * len(rel) - step * sum(min(1.0, max(0.0, (t - c) / 0.05)) for c in rel)
+        elif kind == "pulse":
+            v = 1 + sum(0.10 * math.exp(-(t - c) / 0.10) for c in rel[::2] if t >= c)
+        else:
+            v = 1.0
+        z.append(min(v, 1.6))
+    return z
+
+
+def render_photo_zoom(img: Path, zooms, seg: Path):
+    """Render a photo with a per-frame zoom (centre crop), piped to ffmpeg."""
+    from PIL import Image
+    with Image.open(img) as im:
+        im = im.convert("RGB")
+        k = min(W / im.width, H / im.height)              # fit to the frame - enlarge small images too
+        im = im.resize((max(1, round(im.width * k)), max(1, round(im.height * k))), Image.LANCZOS)
+        canvas = Image.new("RGB", (W, H))
+        canvas.paste(im, ((W - im.width) // 2, (H - im.height) // 2))
+    p = subprocess.Popen(["ffmpeg", "-y", "-v", "error", "-f", "rawvideo", "-pix_fmt", "rgb24",
+                          "-s", f"{W}x{H}", "-r", str(FPS), "-i", "-", "-c:v", "libx264",
+                          "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", str(seg)],
+                         stdin=subprocess.PIPE)
+    for z in zooms:
+        if z <= 1.001:
+            frame = canvas
+        else:
+            cw, ch = W / z, H / z
+            box = ((W - cw) / 2, (H - ch) / 2, (W + cw) / 2, (H + ch) / 2)
+            frame = canvas.resize((W, H), Image.BILINEAR, box=box)
+        p.stdin.write(frame.tobytes())
+    p.stdin.close()
+    if p.wait() != 0:
+        raise RuntimeError(f"ffmpeg failed rendering {img.name}")
+
+
+def render_runs(items, song, out: Path, seed=1, video_target=3.5, step=0.02):
+    points, song_dur = find_points(song, "onsets", 0.06)
+    levels = hit_levels(song, [t for t, _ in points])
+    runs = find_runs(points, 0.35, 0.3, 3, levels)
+    segs, d = plan_runs(items, points, runs, song_dur, seed, video_target)
+    from collections import Counter
+    kinds = Counter(k for _, _, _, k, _ in segs)
+    print(f"Found {len(points)} hits, {len(runs)} runs in the song ({song_dur:.0f}s); "
+          f"density {d:.2f}; segments: {dict(kinds)}")
+    tmp = Path(tempfile.mkdtemp(prefix="beatmovie_"))
+    files, f0 = [], 0
+    for n, (it, a, b, kind, clacks) in enumerate(segs):
+        f1 = round(b * FPS)
+        nframes = f1 - f0
+        if nframes <= 0:
+            continue
+        seg = tmp / f"seg{n:05d}.mp4"
+        if kind == "video":
+            vl = video_len(it["sorted"])
+            start = max(0.0, vl / 2 - nframes / FPS / 2)
+            run(["ffmpeg", "-y", "-v", "error", "-ss", f"{start:.2f}", "-i", str(it["sorted"]),
+                 "-vf", VF + ",tpad=stop_mode=clone:stop=-1", "-frames:v", str(nframes),
+                 "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-an", str(seg)])
+        else:
+            # a visible step per hit, smaller for long bursts so the total stays ~30-40%
+            st = min(0.05, max(step, 0.35 / max(1, len(clacks))))
+            render_photo_zoom(prep_photo(it["sorted"], tmp), zoom_curve(kind, clacks, f0 / FPS, nframes, st), seg)
+        files.append(seg)
+        f0 = f1
+        print(f"\r  rendered {len(files)}/{len(segs)} segments", end="")
+    print()
+    total = f0 / FPS
+    lst = tmp / "list.txt"
+    lst.write_text("".join(f"file '{s.as_posix()}'\n" for s in files), encoding="utf-8")
+    final = out / "movie_runs.mp4"
+    run(["ffmpeg", "-y", "-v", "error", "-f", "concat", "-safe", "0", "-i", str(lst), "-i", str(song),
+         "-map", "0:v", "-map", "1:a", "-c:v", "copy", "-af", f"afade=t=out:st={total - 0.3:.2f}:d=0.3",
+         "-c:a", "aac", "-b:a", "192k", "-t", f"{total:.3f}", str(final)])
+    (out / "movie_runs_plan.txt").write_text(
+        "".join(f"{a:7.2f}-{b:7.2f}  {k:6s} {len(c):3d} hits  {it['sorted'].name}\n"
+                for it, a, b, k, c in segs), encoding="utf-8")
+    shutil.rmtree(tmp, ignore_errors=True)
+    print(f"Done: {final}  ({total:.0f}s, {len(files)} segments)")
+
+
 def render(items, song, out: Path, mode, min_gap, video_beats, section="whole",
-           big_gap=0.8, video_max=8.0):
+           big_gap=0.8, video_max=8.0, seed=1, video_target=3.5):
+    if section == "runs":
+        return render_runs(items, song, out, seed, video_target)
     points, song_dur = find_points(song, mode, min_gap)
     print(f"Found {len(points)} {mode} in the song ({song_dur:.0f}s)")
     slots_needed = sum(video_beats if it["video"] else 1 for it in items)
@@ -404,9 +699,14 @@ def main():
                     help="big mode: shortest time between picture changes, in seconds")
     ap.add_argument("--video-max", type=float, default=8.0,
                     help="big mode: longest time a video plays, in seconds")
-    ap.add_argument("--section", choices=["big", "whole", "start", "end"], default="big",
-                    help="whole: spread over the song using the strongest hits; "
+    ap.add_argument("--section", choices=["big", "runs", "whole", "start", "end"], default="big",
+                    help="big: cut on the strongest hits; runs: bursts of fast hits get varied "
+                         "zoom/flurry styles; whole: strongest hits, no gap; "
                          "start/end: a new picture on every hit of the song's opening/finale")
+    ap.add_argument("--seed", type=int, default=1,
+                    help="runs mode: change it for a different (repeatable) mix of styles")
+    ap.add_argument("--video-target", type=float, default=3.5,
+                    help="runs mode: how long a video plays, in seconds")
     ap.add_argument("--name", default=None,
                     help=r"only files whose name matches this regex, e.g. _screenshot\.jpg$ or ^IMG_")
     a = ap.parse_args()
@@ -418,7 +718,7 @@ def main():
     if a.sort_only or not a.song:
         return
     render(items, Path(a.song).resolve(), out, a.mode, a.min_gap, a.video_beats, a.section,
-           a.gap, a.video_max)
+           a.gap, a.video_max, a.seed, a.video_target)
 
 
 if __name__ == "__main__":

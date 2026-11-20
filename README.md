@@ -28,6 +28,9 @@ python beat_movie.py INPUT [SONG] OUTPUT [options]
 | `--section big` | yes | whole song; cut on the strongest hits first, at least `--gap` apart |
 | `--gap` | 0.8 | `big`: shortest time between picture changes (s) |
 | `--video-max` | 8 | `big`: longest time a video plays (s) |
+| `--section runs` | | bursts of fast hits get varied styles: flurry (crescendo), zoom out (softer), zoom in / pulse / "words" (steady); big hits between bursts |
+| `--seed` | 1 | `runs`: a different, repeatable mix of styles |
+| `--video-target` | 3.5 | `runs`: how long a video plays (s) |
 | `--section start` / `end` | | a new picture on every hit of the song's opening / finale |
 | `--section whole` | | whole song, strongest hits, no minimum gap |
 | `--video-beats` | 2 | `start`/`end`/`whole`: how many hits a video lasts |
@@ -54,6 +57,8 @@ python beat_movie.py work\sorted song.mp3 work\render --section big --gap 0.8
 | `tools/analyze_song.py` | Hits per 5 seconds; `--slots N` shows how long N hits last. |
 | `tools/verify_big_hits.py` | Checks a `big` movie: cuts on hits, biggest hits used. |
 | `tools/verify_cuts.py` | Checks a `start`/`end` movie: cuts on hits. |
+| `tools/find_runs.py` | Lists the runs (bursts of fast hits) in a song and whether they get louder/softer. |
+| `tools/verify_runs.py` | Checks a `runs` movie: picture changes on the planned frames, zooms move on hits. |
 | `setup.ps1` | Installs Python, FFmpeg, Git and the Python packages (pinned), then checks them. |
 | `requirements.txt` | The Python packages and their exact versions. |
 | `CHANGELOG.md` | What changed in the script, version by version, and why. |

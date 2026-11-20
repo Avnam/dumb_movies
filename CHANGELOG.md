@@ -3,6 +3,22 @@
 Versions v1-v5 were written before version control started, so only their
 descriptions are kept here; v5 is the first version stored in git.
 
+## v7 - 2026-11-20 - "runs" mode: zoom and flurries on bursts of fast hits
+- New `--section runs`. Finds runs: 3+ hits in a row with nearly the same short spacing
+  (`find_runs`), and whether each gets louder/softer from the loudness after each hit
+  (`hit_levels`; a single loud last hit doesn't count as a crescendo).
+- Each run gets a style, varied through the song: crescendo -> flurry (new picture every
+  1-3 hits), softer -> pull (zoom out per hit), steady -> push (zoom in per hit), pulse
+  (zoom pulse on every other hit) or words (new picture every few hits). Runs under 5 hits
+  that aren't crescendos are treated as ordinary hits. Between runs: big hits, min gap.
+- A density knob is searched, then fine-tuned (split/merge), so the files fill the song
+  exactly. `--seed` gives a different, repeatable mix; `--video-target` (default 3.5 s).
+- Zoom is drawn frame by frame (PIL -> ffmpeg), 2-5% per hit. Writes `movie_runs_plan.txt`.
+- Sorting an already-sorted folder no longer doubles the number/date prefix.
+- New tools: `find_runs.py` (list runs in a song), `verify_runs.py` (checks cuts and zooms).
+- Why: requested - on fast repeating hits, play with one picture instead of always cutting,
+  and vary it (e.g. switch on every hit in a crescendo).
+
 ## v6 - 2026-11-20 - generic: nothing tied to one camera, person or song
 - `beat_movie.py`: logic unchanged; help text and comments no longer mention a specific camera.
 - Tools take settings instead of fixed values: `inspect_zip.py --pattern`,
