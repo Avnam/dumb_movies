@@ -1,7 +1,14 @@
-# Photos, videos and rendered movies are large and can be rebuilt from the
-# Takeout zip + the song, so they are not versioned.
-monitor_movie/
+# Photos, videos, songs and rendered movies are large and personal, and can be
+# rebuilt from the sources, so they are not versioned. Keep them in work/.
+work/
 *.mp4
+*.mov
 *.mp3
+*.m4a
+*.wav
+*.jpg
+*.jpeg
+*.png
+*.heic
 *.zip
 __pycache__/

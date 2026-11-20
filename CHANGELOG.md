@@ -3,6 +3,16 @@
 Versions v1-v5 were written before version control started, so only their
 descriptions are kept here; v5 is the first version stored in git.
 
+## v6 - 2026-11-20 - generic: nothing tied to one camera, person or song
+- `beat_movie.py`: logic unchanged; help text and comments no longer mention a specific camera.
+- Tools take settings instead of fixed values: `inspect_zip.py --pattern`,
+  `analyze_song.py --slots`, `verify_big_hits.py --gap --video-max`, and
+  `verify_cuts.py` counts the slots from the folder (was fixed at 98).
+- Added `tools/_common.py` (shared loading of beat_movie and a sorted folder).
+- README rewritten as a general guide; run-specific details live only in RENDER_LOG.md,
+  without personal names. Work folder renamed `monitor_movie/` -> `work/`.
+- `.gitignore` also excludes common photo/video/audio files anywhere in the project.
+
 ## Setup files - 2026-11-20
 - Added `requirements.txt` (numpy 2.5.5, pillow 13.0.0, pillow-heif 1.8.1) and
   `setup.ps1`, which installs Python 3.12.10, FFmpeg 9.0.2 and Git 2.56.0 with winget,

@@ -90,7 +90,7 @@ def date_from_name(p: Path):
 
 def taken_date(p: Path, is_video: bool):
     m = re.search(r"(?<!\d)(20\d{2})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})(?!\d)", p.stem)
-    if m:  # full timestamp in the name (e.g. monitor screenshots) is the most exact
+    if m:  # a full timestamp in the name (cameras, screenshot apps) is the most exact
         try:
             return datetime(*map(int, m.groups()))
         except ValueError:
@@ -408,7 +408,7 @@ def main():
                     help="whole: spread over the song using the strongest hits; "
                          "start/end: a new picture on every hit of the song's opening/finale")
     ap.add_argument("--name", default=None,
-                    help=r"only files whose name matches this regex, e.g. ^screensh_12345678_")
+                    help=r"only files whose name matches this regex, e.g. _screenshot\.jpg$ or ^IMG_")
     a = ap.parse_args()
     out = Path(a.output).resolve()
     out.mkdir(parents=True, exist_ok=True)

@@ -1,29 +1,66 @@
 # beat_movie
 
-Turns the baby monitor's screenshots and short recordings into a movie cut to music:
-the picture changes on the song's hits.
+Turns a set of photos and short videos into a movie cut to music: the pictures appear
+in the order they were taken, and the picture changes on the song's hits.
+
+Works with any photos/videos - a phone gallery, a Google Takeout export, a camera folder.
+
+## How it works
+
+1. **Collect** - takes every photo/video in a folder or zip (optionally only names matching `--name`).
+2. **Sort** - by the time each was taken: a full timestamp in the file name, else Google's
+   `.json` sidecar, EXIF, video metadata, or the file time. Copies them to `<output>/sorted/`.
+3. **Find the hits** - measures where new sound starts in the song (plucks, drums, clicks).
+4. **Plan the cuts** - by `--section` (see below).
+5. **Render** - each photo is upright-corrected and fitted to 1920x1080, videos play at
+   normal speed, the song goes underneath -> `<output>/movie_<section>.mp4`.
+
+## Usage
+
+```
+python beat_movie.py INPUT [SONG] OUTPUT [options]
+```
+
+| Option | Default | Meaning |
+|---|---|---|
+| `--name REGEX` | all files | only files whose name matches, e.g. `_screenshot\.jpg$` |
+| `--sort-only` | | only collect and sort, no movie |
+| `--section big` | yes | whole song; cut on the strongest hits first, at least `--gap` apart |
+| `--gap` | 0.8 | `big`: shortest time between picture changes (s) |
+| `--video-max` | 8 | `big`: longest time a video plays (s) |
+| `--section start` / `end` | | a new picture on every hit of the song's opening / finale |
+| `--section whole` | | whole song, strongest hits, no minimum gap |
+| `--video-beats` | 2 | `start`/`end`/`whole`: how many hits a video lasts |
+| `--min-gap` | 0.12 | ignore hits closer together than this (s) |
+
+Example - from a Google Takeout zip, keeping only one camera's files:
+
+```
+python tools\inspect_zip.py takeout.zip                        # see the file-name patterns
+python beat_movie.py takeout.zip work --name "_screenshot\.jpg$" --sort-only
+python tools\contact_sheet.py work\sorted work\contact_sheet.jpg  # check the picks
+python beat_movie.py work\sorted song.mp3 work\render --section big --gap 0.8
+```
+
+`INPUT` can be the `sorted` folder of an earlier run - it keeps its order and dates.
 
 ## Files
 
 | File | What it does |
 |---|---|
-| `beat_movie.py` | The main script: collects files, sorts them by date, finds the hits in the song, renders the movie. |
-| `tools/inspect_zip.py` | Lists what's inside a Google Takeout zip (file-name patterns, counts). |
-| `tools/contact_sheet.py` | Makes one image with thumbnails of all files, numbered in date order. |
-| `tools/analyze_song.py` | Shows how many hits the song has per 5 seconds. |
-| `tools/verify_big_hits.py` | Checks a "big" movie: are cuts on hits, are the biggest hits used. |
-| `tools/verify_cuts.py` | Checks a "start"/"end" movie: are cuts on hits. |
-| `setup.ps1` | Installs Python, FFmpeg, Git and the Python packages (pinned versions), then checks them. |
+| `beat_movie.py` | The main script (above). |
+| `tools/inspect_zip.py` | File-name patterns inside a zip; `--pattern` counts matches. |
+| `tools/contact_sheet.py` | One image with numbered thumbnails of a sorted folder. |
+| `tools/analyze_song.py` | Hits per 5 seconds; `--slots N` shows how long N hits last. |
+| `tools/verify_big_hits.py` | Checks a `big` movie: cuts on hits, biggest hits used. |
+| `tools/verify_cuts.py` | Checks a `start`/`end` movie: cuts on hits. |
+| `setup.ps1` | Installs Python, FFmpeg, Git and the Python packages (pinned), then checks them. |
 | `requirements.txt` | The Python packages and their exact versions. |
 | `CHANGELOG.md` | What changed in the script, version by version, and why. |
-| `RENDER_LOG.md` | Every movie made: which script version, song and settings. |
+| `RENDER_LOG.md` | Every movie made: script version, inputs and settings. |
 
-## Sources (not in version control)
-
-- Photos: Google Takeout export of Google Photos, 2026 only
-  (`takeout.zip`, 31 GB). Monitor files are named
-  `<YYYYMMDDHHMMSS>_12345678_screenshot.jpg` and `..._record.mp4`.
-- Song: `song.mp3`.
+Photos, videos, songs and movies are not versioned (see `.gitignore`); keep them in `work/`
+or anywhere outside the project.
 
 ## Requirements
 
@@ -40,14 +77,5 @@ To set up a PC, run in PowerShell from this folder:
 powershell -ExecutionPolicy Bypass -File .\setup.ps1
 ```
 
-`-CheckOnly` only reports what's installed. librosa was installed early on (v1) but is no
-longer used: it needs a Microsoft C++ runtime this PC lacks, so v2 replaced it.
-
-## How to remake the current movie
-
-```
-python beat_movie.py "<takeout zip>" monitor_movie --name "_12345678_" --sort-only
-python beat_movie.py monitor_movie\sorted "<song.mp3>" monitor_movie\render --section big --gap 0.8 --video-max 8
-```
-
-Output: `monitor_movie\render\movie_big.mp4`. After rendering, add a line to `RENDER_LOG.md`.
+`-CheckOnly` only reports what's installed. librosa was used in v1 but is no longer needed:
+it requires a Microsoft C++ runtime that may be missing, so v2 replaced it.
