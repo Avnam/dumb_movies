@@ -3,6 +3,11 @@
 Versions v1-v5 were written before version control started, so only their
 descriptions are kept here; v5 is the first version stored in git.
 
+## Setup files - 2026-11-20
+- Added `requirements.txt` (numpy 2.5.5, pillow 13.0.0, pillow-heif 1.8.1) and
+  `setup.ps1`, which installs Python 3.12.10, FFmpeg 9.0.2 and Git 2.56.0 with winget,
+  then the Python packages, and checks everything. The script itself is unchanged (still v5).
+
 ## v5 - 2026-11-19 - cut only on big hits (first version in git)
 - New default mode `--section big`: uses the whole song; picks the strongest hits
   first and never puts two picture changes closer than `--gap` seconds (default 0.8).

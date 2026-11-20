@@ -13,6 +13,8 @@ the picture changes on the song's hits.
 | `tools/analyze_song.py` | Shows how many hits the song has per 5 seconds. |
 | `tools/verify_big_hits.py` | Checks a "big" movie: are cuts on hits, are the biggest hits used. |
 | `tools/verify_cuts.py` | Checks a "start"/"end" movie: are cuts on hits. |
+| `setup.ps1` | Installs Python, FFmpeg, Git and the Python packages (pinned versions), then checks them. |
+| `requirements.txt` | The Python packages and their exact versions. |
 | `CHANGELOG.md` | What changed in the script, version by version, and why. |
 | `RENDER_LOG.md` | Every movie made: which script version, song and settings. |
 
@@ -25,7 +27,21 @@ the picture changes on the song's hits.
 
 ## Requirements
 
-Python 3.12 with `numpy` and `pillow` (`pillow-heif` optional, for HEIC), and ffmpeg on the PATH.
+| Tool | Version | How |
+|---|---|---|
+| Python | 3.12.10 | winget `Python.Python.3.12` |
+| FFmpeg | 9.0.2 (gyan.dev full build) | winget `Gyan.FFmpeg` |
+| Git | 2.56.0 | winget `Git.Git` |
+| Python packages | see `requirements.txt` | `pip install -r requirements.txt` |
+
+To set up a PC, run in PowerShell from this folder:
+
+```
+powershell -ExecutionPolicy Bypass -File .\setup.ps1
+```
+
+`-CheckOnly` only reports what's installed. librosa was installed early on (v1) but is no
+longer used: it needs a Microsoft C++ runtime this PC lacks, so v2 replaced it.
 
 ## How to remake the current movie
 
