@@ -3,6 +3,12 @@
 Versions v1-v5 were written before version control started, so only their
 descriptions are kept here; v5 is the first version stored in git.
 
+## grow_movie.py - 2026-11-21 - music
+- `--song FILE`: music under the movie. If the song is longer, the last picture is held
+  until it ends; if shorter, the song fades out at the end. Pictures are not synced to
+  the beat (by design for this movie).
+- tools/cut_song.py (previous commit) makes a song shorter with jumps that are hard to hear.
+
 ## grow_movie.py - 2026-11-20 - pace per 10 s, exclude/dwell edits, review pictures
 - `--per10 N`: pictures per 10 seconds (e.g. 37); frames follow the exact running time,
   so fractional paces keep the right total.

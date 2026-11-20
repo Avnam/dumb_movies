@@ -380,6 +380,9 @@ def main():
     ap.add_argument("--edits", help="file of 'exclude <name>' and 'dwell <name> <seconds>' lines")
     ap.add_argument("--dwell-last", type=float, default=3.0,
                     help="seconds to stay on the last picture (default 3; 0 = normal pace)")
+    ap.add_argument("--song", help="music under the movie; the last picture is held until the "
+                                   "song ends (if the song is longer), or the song fades out "
+                                   "at the end (if it is shorter)")
     ap.add_argument("--save-frames", action="store_true",
                     help="also save each aligned picture to OUTPUT/aligned/ (numbered, for review)")
     ap.add_argument("--size", default="1920x1080", help="WIDTHxHEIGHT (default 1920x1080)")
@@ -446,10 +449,26 @@ def main():
         print(f"  note: dwell '{pat}' matched no chosen picture")
     if a.dwell_last > 0:
         durations[-1] = max(durations[-1], a.dwell_last)
+    song_len = None
+    if a.song:
+        song_len = float(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                                         "-of", "csv=p=0", a.song], capture_output=True, text=True).stdout)
+        extra = song_len - sum(durations)
+        if extra > 0:
+            durations[-1] += extra                       # hold the last picture until the song ends
+            print(f"  song is {song_len:.1f}s: last picture held {extra:.2f}s longer")
     birth = datetime.strptime(a.birth, "%Y-%m-%d").date() if a.birth else None
-    total = render(picks, chosen, out / "sorted", out / "grow.mp4", (W, H), a.fps, durations, a.style,
+    video = out / ("grow_video_only.mp4" if a.song else "grow.mp4")
+    total = render(picks, chosen, out / "sorted", video, (W, H), a.fps, durations, a.style,
                    a.fade, a.eye_y * H, eye_px, a.label, birth,
                    out / "aligned" if a.save_frames else None)
+    if a.song:
+        fade = min(2.0, total / 4)
+        af = f"afade=t=out:st={total - fade:.3f}:d={fade:.3f}" if song_len > total + 0.05 else "anull"
+        subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", str(video), "-i", a.song, "-map", "0:v",
+                        "-map", "1:a", "-c:v", "copy", "-af", af, "-c:a", "aac", "-b:a", "192k",
+                        "-t", f"{total:.3f}", str(out / "grow.mp4")], check=True)
+        video.unlink()
     lines, t = [], 0.0
     for k, (d, n, q) in enumerate(picks):
         ps = pose(chosen[n])
