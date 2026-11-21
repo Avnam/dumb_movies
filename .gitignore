@@ -14,3 +14,9 @@ work/
 __pycache__/
 # face models are downloaded by setup.ps1 (checked by SHA-256)
 models/
+
+# Personal run records - kept on this PC, never uploaded:
+# your movie log, picture choices (exclude/dwell) and manual zoom points.
+RENDER_LOG.md
+grow/
+focus/

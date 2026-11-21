@@ -12,7 +12,7 @@ descriptions are kept here; v5 is the first version stored in git.
 ## grow_movie.py - 2026-11-20 - pace per 10 s, exclude/dwell edits, review pictures
 - `--per10 N`: pictures per 10 seconds (e.g. 37); frames follow the exact running time,
   so fractional paces keep the right total.
-- `--edits FILE`: `exclude <name>` / `dwell <name> <seconds>` lines (grow/ holds them).
+- `--edits FILE`: `exclude <name>` / `dwell <name> <seconds>` lines.
 - `--dwell-last` (default 3 s) on the last picture.
 - No length given = all good photos (was 60 s).
 - `--save-frames`: aligned pictures saved as NNNN_date__original.jpg; tools/review_sheets.py
@@ -22,7 +22,7 @@ descriptions are kept here; v5 is the first version stored in git.
 - choose_photos: if fewer good photos than --count/--duration allow, use them all (the
   time-slot method kept only 114 of 380 because photos come in bursts); if more, take the
   best per time slot, then fill up with the best of the rest.
-- First full run (1,324 album photos): 380 pictures, 38 s.
+- First full run (1,324 photos): 380 pictures, 38 s.
 
 ## grow_movie.py - 2026-11-20 - same face size, front-facing only (tested on a 2026 sample)
 - One face size for the whole movie (eye distance), `--eye-dist auto`: the biggest size
@@ -34,7 +34,7 @@ descriptions are kept here; v5 is the first version stored in git.
   `--max-pitch 0.12`); in each time slot the most straight-on, sharpest photo wins.
   Gaze can't be measured with these models - head direction is the proxy.
 - Person matching is iterative (references rebuilt from accepted faces), threshold 0.363.
-- Plan file lists yaw, pitch and scale per picture. Test (230 mixed 2026 photos): all
+- Plan file lists yaw, pitch and scale per picture. Test (230 mixed photos): all
   scales x0.25-x0.99, max |yaw| 0.23; 2 of 28 pictures were another child.
 
 ## grow_movie.py - 2026-11-20 - work in progress, NOT TESTED YET
@@ -84,8 +84,8 @@ descriptions are kept here; v5 is the first version stored in git.
   `analyze_song.py --slots`, `verify_big_hits.py --gap --video-max`, and
   `verify_cuts.py` counts the slots from the folder (was fixed at 98).
 - Added `tools/_common.py` (shared loading of beat_movie and a sorted folder).
-- README rewritten as a general guide; run-specific details live only in RENDER_LOG.md,
-  without personal names. Work folder renamed `monitor_movie/` -> `work/`.
+- README rewritten as a general guide; run-specific details are kept out of the repository.
+  Work folder renamed to `work/`.
 - `.gitignore` also excludes common photo/video/audio files anywhere in the project.
 
 ## Setup files - 2026-11-20
@@ -109,7 +109,7 @@ descriptions are kept here; v5 is the first version stored in git.
 - `--name REGEX` keeps only matching files and extracts only those from the zip.
 - The date comes from a full timestamp in the file name first (most exact for the
   monitor), then Google's .json sidecar, EXIF, video metadata, file time.
-- Why: the export holds all 2026 photos; only the monitor files are wanted.
+- Why: an export holds a whole library; often only one camera's files are wanted.
 
 ## v2 - 2026-11-17 - numpy-only hit detection
 - Replaced librosa with a small spectral-flux detector (numpy + ffmpeg decoding).
