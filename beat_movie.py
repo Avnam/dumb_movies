@@ -827,6 +827,8 @@ def main():
         sys.exit("No photos or videos found.")
     if a.sort_only or not a.song:
         return
+    if not Path(a.song).is_file():
+        sys.exit(f"Song not found: {a.song}")
     render(items, Path(a.song).resolve(), out, a.mode, a.min_gap, a.video_beats, a.section,
            a.gap, a.video_max, a.seed, a.video_target, a.focus, a.focus_file)
 

@@ -1,8 +1,8 @@
 """Shorten a song by skipping repeated parts, with jumps that are hard to hear.
 
 Usage:
-  python tools/cut_song.py SONG --target 89 [--out cut.mp3] [--jumps 2] [--keep-intro 15]
-         [--keep-outro 20] [--crossfade 0.03] [--plan]
+  python tools/cut_song.py SONG --target 89 [--out cut.mp3] [--jumps 2] [--keep-intro S]
+         [--keep-outro S] [--crossfade 0.03] [--plan]
 
 How:
   1. Beats: beat_movie's beat tracker (refined to the exact attack).
@@ -80,8 +80,10 @@ def main():
     ap.add_argument("--target", type=float, required=True, help="wanted length in seconds")
     ap.add_argument("--out", help="output file (default: <song name>_cut.mp3 next to this run)")
     ap.add_argument("--jumps", type=int, default=2, help="at most this many skips (default 2)")
-    ap.add_argument("--keep-intro", type=float, default=15, help="don't cut in the first N seconds")
-    ap.add_argument("--keep-outro", type=float, default=20, help="don't cut in the last N seconds")
+    ap.add_argument("--keep-intro", type=float, default=None,
+                    help="don't cut in the first N seconds (default: 15, or a quarter of --target if shorter)")
+    ap.add_argument("--keep-outro", type=float, default=None,
+                    help="don't cut in the last N seconds (default: 20, or a third of --target if shorter)")
     ap.add_argument("--crossfade", type=float, default=0.03, help="blend at each jump, seconds")
     ap.add_argument("--min-between", type=float, default=10,
                     help="at least this many seconds of music between two jumps")
@@ -89,6 +91,13 @@ def main():
     ap.add_argument("--choice", type=int, default=1, help="use the Nth best plan (see --plan)")
     ap.add_argument("--plan", action="store_true", help="only show the best plans, don't write")
     a = ap.parse_args()
+    if not Path(a.song).is_file():
+        sys.exit(f"Song not found: {a.song}")
+    # the untouched intro and ending must leave room to cut: for short targets they shrink
+    if a.keep_intro is None:
+        a.keep_intro = min(15.0, a.target / 4)
+    if a.keep_outro is None:
+        a.keep_outro = min(20.0, a.target / 3)
 
     bm = load_beat_movie()
     y = decode(a.song)
@@ -139,7 +148,9 @@ def main():
             score = worst - 0.01 * err - 0.02 * (n - 1)     # fewer jumps better, close to target
             plans.append((score, combo, length))
     if not plans:
-        sys.exit("No combination of jumps reaches the target length - try --jumps 3 or --tolerance 5")
+        sys.exit(f"No combination of jumps reaches {a.target:.0f}s. Try: --tolerance 5 (accept a length a bit "
+                 f"further off), --jumps {a.jumps + 1} (more skips), or a smaller --keep-intro / --keep-outro "
+                 f"(now {a.keep_intro:.0f}s / {a.keep_outro:.0f}s kept untouched)")
     plans.sort(key=lambda p: -p[0])
     # drop near-duplicates (same jumps shifted by a beat or two)
     uniq = []

@@ -126,7 +126,8 @@ The output folder also has `sorted\` (all photos, in date order) and, with `--sa
 
    Each page shows 60 pictures with big numbers; pictures that already dwell have a green frame.
 
-2. Write an **edits file**, e.g. `my_edits.txt`. Use each photo's **original name** (the part
+2. Write an **edits file**, e.g. `grow\my_edits.txt` (the `grow` folder is ignored by git, so
+   your photo names never get uploaded). Use each photo's **original name** (the part
    after `__` in the `aligned` file name) - names stay valid even when numbers shift:
 
    ```text
@@ -137,7 +138,7 @@ The output folder also has `sorted\` (all photos, in date order) and, with `--sa
    dwell   IMG_20240620_174512 2.2
    ```
 
-3. Run again with `--edits my_edits.txt`. The last picture dwells 3 s by default
+3. Run again with `--edits grow\my_edits.txt`. The last picture dwells 3 s by default
    (`--dwell-last`).
 
 ---
@@ -160,6 +161,8 @@ python tools\cut_song.py song.mp3 --target 90 --choice 1 --out work\song_cut.mp3
 ```
 
 To know the target: run the movie once without a song - the last line says how long it is.
+For short targets the untouched intro/ending shrink automatically; if no plan fits, the
+message says what to relax (`--tolerance`, `--jumps`, `--keep-intro` / `--keep-outro`).
 Listen to the result around the jump times it prints; if a jump lands mid-word, try another plan.
 
 **Where to get the mp3.** Use music you own, or royalty-free music - the YouTube Audio Library

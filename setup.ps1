@@ -73,11 +73,18 @@ foreach ($cmd in 'ffmpeg', 'ffprobe', 'git') {
     } else { Write-Host ("{0,-7}: MISSING" -f $cmd); $ok = $false }
 }
 if ($py) {
-    $out = & $py -c 'import numpy, PIL; print(numpy.__version__, PIL.__version__)' 2>$null
+    $out = & $py -c 'import numpy, PIL, cv2; print(numpy.__version__, PIL.__version__, cv2.__version__)' 2>$null
     if ($LASTEXITCODE -eq 0) {
         $v = "$out".Split(' ')
-        Write-Host "Packages: numpy $($v[0]) | pillow $($v[1])"
-    } else { Write-Host 'Packages: MISSING (run .\setup.ps1)'; $ok = $false }
+        Write-Host "Packages: numpy $($v[0]) | pillow $($v[1]) | opencv $($v[2])"
+    } else {
+        # say which package is missing, so the fix is obvious
+        foreach ($mod in 'numpy', 'PIL', 'cv2') {
+            & $py -c "import $mod" 2>$null
+            if ($LASTEXITCODE -ne 0) { Write-Host "Packages: '$mod' MISSING (run .\setup.ps1)" }
+        }
+        $ok = $false
+    }
 }
 foreach ($m in $models) {
     $f = Join-Path $mdir $m.File

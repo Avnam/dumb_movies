@@ -408,6 +408,16 @@ def main():
 
     if not YUNET.exists() or not SFACE.exists():
         sys.exit("Face models missing in models/ - run setup.ps1")
+    song_len = None
+    if a.song:                                           # check the song now, before the slow part
+        if not Path(a.song).is_file():
+            sys.exit(f"Song not found: {a.song}")
+        probe = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                                "-of", "csv=p=0", a.song], capture_output=True, text=True).stdout.strip()
+        try:
+            song_len = float(probe)
+        except ValueError:
+            sys.exit(f"Can't read the song (not an audio file ffmpeg understands?): {a.song}")
     W, H = (int(v) for v in a.size.lower().split("x"))
     out = Path(a.output).resolve(); out.mkdir(parents=True, exist_ok=True)
     bm = load_beat_movie()
@@ -449,10 +459,7 @@ def main():
         print(f"  note: dwell '{pat}' matched no chosen picture")
     if a.dwell_last > 0:
         durations[-1] = max(durations[-1], a.dwell_last)
-    song_len = None
     if a.song:
-        song_len = float(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration",
-                                         "-of", "csv=p=0", a.song], capture_output=True, text=True).stdout)
         extra = song_len - sum(durations)
         if extra > 0:
             durations[-1] += extra                       # hold the last picture until the song ends

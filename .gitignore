@@ -20,3 +20,6 @@ models/
 RENDER_LOG.md
 grow/
 focus/
+# edits files list photo names - keep them out of git wherever they are saved
+*edits*.txt
+my_*.txt
